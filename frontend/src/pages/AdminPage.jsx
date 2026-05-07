@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import GiftManager from '../components/admin/GiftManager'
 import ExportPanel from '../components/admin/ExportPanel'
-import { adminApi } from '../api'
+import { adminApi, setAdminToken } from '../api'
 
 export default function AdminPage() {
   const [password, setPassword] = useState('')
@@ -11,7 +11,9 @@ export default function AdminPage() {
 
   const handleLogin = async () => {
     try {
-      const res = await adminApi.getStats(password)
+      const loginRes = await adminApi.login(password)
+      setAdminToken(loginRes.data.token)
+      const res = await adminApi.getStats()
       setStats(res.data)
       setAuthenticated(true)
       setAuthError('')
@@ -22,7 +24,7 @@ export default function AdminPage() {
 
   const refreshStats = async () => {
     try {
-      const res = await adminApi.getStats(password)
+      const res = await adminApi.getStats()
       setStats(res.data)
     } catch {}
   }
@@ -72,8 +74,8 @@ export default function AdminPage() {
           </div>
         )}
       </div>
-      <GiftManager password={password} onRefresh={refreshStats} />
-      <ExportPanel password={password} />
+      <GiftManager onRefresh={refreshStats} />
+      <ExportPanel onRefresh={refreshStats} />
     </div>
   )
 }
