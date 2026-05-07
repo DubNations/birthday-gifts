@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import BudgetInput from '../components/client/BudgetInput'
@@ -6,6 +6,7 @@ import PlanSelector from '../components/client/PlanSelector'
 import FeedbackMessage from '../components/client/FeedbackMessage'
 import { useDrawStore } from '../store/drawStore'
 import { useFingerprint } from '../hooks/useFingerprint'
+import { drawApi } from '../api'
 
 export default function HomePage() {
   const navigate = useNavigate()
@@ -13,6 +14,15 @@ export default function HomePage() {
   const { plans, fetchPlans, setSelectedPlan, startDraw, loading, error, success, loadingMessage, setError } = useDrawStore()
   const [budget, setBudget] = useState('')
   const [step, setStep] = useState('input')
+  const [campaign, setCampaign] = useState(null)
+
+  useEffect(() => {
+    let mounted = true
+    drawApi.getCampaign()
+      .then((res) => { if (mounted) setCampaign(res.data) })
+      .catch(() => { if (mounted) setCampaign(null) })
+    return () => { mounted = false }
+  }, [])
 
   const handleBudgetSubmit = async () => {
     const val = parseFloat(budget)
@@ -55,6 +65,7 @@ export default function HomePage() {
       >
         <h1 className="text-5xl font-bold text-primary-700 mb-4">🎁 Birthday Gift</h1>
         <p className="text-lg text-gray-600">输入预算，智能分配抽奖方案</p>
+        {campaign && <p className="text-sm text-primary-600 mt-2">当前活动：{campaign.name}</p>}
       </motion.div>
 
       <motion.section
@@ -67,8 +78,8 @@ export default function HomePage() {
         <div className="grid gap-3 text-sm text-gray-600 sm:grid-cols-2">
           <p><strong>预算影响方案：</strong>系统会根据预算自动组合 A/B/C 抽奖次数，预算越高越可能包含更高等级或更多礼物。</p>
           <p><strong>A/B/C 等级：</strong>A 级通常为高价惊喜，B 级为中价礼物，C 级为轻量小礼物。</p>
-          <p><strong>锁定时长：</strong>抽中礼物后会临时锁定，请在锁定期内确认或反悔，超时可能释放回礼物池。</p>
-          <p><strong>反悔次数：</strong>每位参与者有有限反悔机会，用完后只能确认当前锁定礼物。</p>
+          <p><strong>锁定时长：</strong>抽中礼物后会临时锁定，请在 {campaign?.lock_timeout_minutes || '活动规定'} 分钟内确认或反悔，超时可能释放回礼物池。</p>
+          <p><strong>反悔次数：</strong>每位参与者有 {campaign?.max_regret_chances ?? '有限'} 次反悔机会，用完后只能确认当前锁定礼物。</p>
           <p className="sm:col-span-2"><strong>价格说明：</strong>方案中的预计花费仅用于预算规划，最终实际价格可能因商品改价、库存或购买渠道不同而变化。</p>
         </div>
       </motion.section>

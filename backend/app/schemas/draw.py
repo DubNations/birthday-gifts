@@ -1,17 +1,27 @@
-from pydantic import BaseModel
+from decimal import Decimal
+
+from pydantic import BaseModel, field_serializer
 from typing import Optional, Dict, List
 from datetime import datetime
 
 
 class PlanRequest(BaseModel):
-    budget: float
+    budget: Decimal
 
 
 class DrawPlan(BaseModel):
     plan_type: str
     description: str
     draws: Dict[str, int]
-    estimated_cost: float
+    estimated_cost: Decimal
+    min_possible_cost: Decimal
+    max_possible_cost: Decimal
+    remaining_budget_estimate: Decimal
+    explanation: str
+
+    @field_serializer("estimated_cost", "min_possible_cost", "max_possible_cost", "remaining_budget_estimate")
+    def serialize_money(self, value: Decimal) -> float:
+        return float(value)
 
 
 class PlansResponse(BaseModel):
@@ -20,7 +30,7 @@ class PlansResponse(BaseModel):
 
 class DrawStartRequest(BaseModel):
     fingerprint_id: str
-    budget: float
+    budget: Decimal
     plan_type: str
 
 

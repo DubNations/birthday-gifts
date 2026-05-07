@@ -68,11 +68,14 @@ export const adminApi = {
   bulkUpdateTier: (giftIds, tier) => api.post('/admin/gifts/bulk-tier', { gift_ids: giftIds, tier }),
   bulkUpdateStatus: (giftIds, status) => api.post('/admin/gifts/bulk-status', { gift_ids: giftIds, status }),
   getStats: () => api.get('/admin/stats'),
+  getCampaign: () => api.get('/admin/campaign/current'),
+  updateCampaign: (data) => api.put('/admin/campaign/current', data),
   exportGifts: (exportType = 'claimed', groupBy = 'session') => api.post('/admin/export', null, { params: { export_type: exportType, group_by: groupBy } }),
   resetGifts: (confirmation) => api.post('/admin/reset', { confirmation }),
 }
 
 export const drawApi = {
+  getCampaign: () => api.get('/draw/campaign'),
   getPlans: (budget) => api.post('/draw/plans', { budget }),
   startDraw: (fingerprintId, budget, planType) => api.post('/draw/start', {
     fingerprint_id: fingerprintId,

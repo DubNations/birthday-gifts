@@ -7,6 +7,7 @@ import json
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from decimal import Decimal
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -15,12 +16,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from ..config import ADMIN_PASSWORD, ADMIN_TOKEN_EXPIRE_MINUTES, ADMIN_TOKEN_SECRET, DATABASE_URL, LOCK_TIMEOUT_MINUTES
+from ..config import ADMIN_PASSWORD, ADMIN_TOKEN_EXPIRE_MINUTES, ADMIN_TOKEN_SECRET, DATABASE_URL
 from ..database import get_db
 from ..models.draw_session import DrawSession
 from ..models.gift import Gift
 from ..models.user_action import UserAction
+from ..schemas.campaign import CampaignResponse, CampaignUpdate
 from ..schemas.gift import GiftCreate, GiftListResponse, GiftResponse, GiftUpdate
+from ..services.campaign import get_active_campaign
 from ..services.gift_state import release_expired_locks
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -122,12 +125,25 @@ def create_data_snapshot(reason: str) -> str:
     return str(backup_path)
 
 
-def log_admin_action(db: Session, action: str, gift_id: int | None = None, details: dict | None = None):
+def _json_safe(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def log_admin_action(db: Session, action: str, gift_id: int | None = None, details: dict | None = None, campaign_id: int | None = None):
     log = UserAction(
+        campaign_id=campaign_id,
         fingerprint_id=ADMIN_FINGERPRINT,
         gift_id=gift_id,
         action=action[:40],
-        details=json.dumps(details or {}, ensure_ascii=False),
+        details=json.dumps(_json_safe(details or {}), ensure_ascii=False),
     )
     db.add(log)
 
@@ -137,8 +153,10 @@ def _validate_tier(tier: str):
         raise HTTPException(status_code=400, detail="等级必须是 A、B 或 C")
 
 
-def _gift_query(db: Session, status_filter: str | None, tier: str | None, q: str | None, min_price: float | None, max_price: float | None):
+def _gift_query(db: Session, status_filter: str | None, tier: str | None, q: str | None, min_price: Decimal | None, max_price: Decimal | None, campaign_id: int | None):
     query = db.query(Gift)
+    if campaign_id is not None:
+        query = query.filter(Gift.campaign_id == campaign_id)
     if status_filter:
         if status_filter not in VALID_STATUSES:
             raise HTTPException(status_code=400, detail="状态必须是 available、locked、claimed 或 disabled")
@@ -177,17 +195,18 @@ def list_gifts(
     status_filter: str | None = Query(default=None, alias="status"),
     tier: str | None = None,
     q: str | None = None,
-    min_price: float | None = Query(default=None, ge=0),
-    max_price: float | None = Query(default=None, ge=0),
+    min_price: Decimal | None = Query(default=None, ge=0),
+    max_price: Decimal | None = Query(default=None, ge=0),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
     auth: bool = Depends(verify_admin),
 ):
-    release_expired_locks(db)
+    campaign = get_active_campaign(db)
+    release_expired_locks(db, campaign)
     if min_price is not None and max_price is not None and min_price > max_price:
         raise HTTPException(status_code=400, detail="最低价格不能高于最高价格")
-    query = _gift_query(db, status_filter, tier, q, min_price, max_price)
+    query = _gift_query(db, status_filter, tier, q, min_price, max_price, campaign.id)
     total = query.count()
     gifts = query.order_by(Gift.tier, Gift.price, Gift.id).offset((page - 1) * page_size).limit(page_size).all()
     return {"items": gifts, "total": total, "page": page, "page_size": page_size}
@@ -196,10 +215,13 @@ def list_gifts(
 @router.post("/gifts", response_model=GiftResponse)
 def create_gift(gift: GiftCreate, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
     _validate_tier(gift.tier)
-    db_gift = Gift(**gift.model_dump())
+    campaign = get_active_campaign(db)
+    data = gift.model_dump()
+    data["campaign_id"] = data.get("campaign_id") or campaign.id
+    db_gift = Gift(**data)
     db.add(db_gift)
     db.flush()
-    log_admin_action(db, "admin_create", db_gift.id, gift.model_dump())
+    log_admin_action(db, "admin_create", db_gift.id, data, data["campaign_id"])
     db.commit()
     db.refresh(db_gift)
     return db_gift
@@ -218,7 +240,7 @@ def update_gift(gift_id: int, gift: GiftUpdate, db: Session = Depends(get_db), a
     before = {key: getattr(db_gift, key) for key in update_data.keys()}
     for key, value in update_data.items():
         setattr(db_gift, key, value)
-    log_admin_action(db, "admin_edit", gift_id, {"before": before, "after": update_data})
+    log_admin_action(db, "admin_edit", gift_id, {"before": before, "after": update_data}, db_gift.campaign_id)
     db.commit()
     db.refresh(db_gift)
     return db_gift
@@ -233,10 +255,10 @@ def delete_gift(gift_id: int, db: Session = Depends(get_db), auth: bool = Depend
         raise HTTPException(status_code=400, detail="礼物正在被锁定，无法删除")
     if db_gift.status == "claimed":
         raise HTTPException(status_code=400, detail="礼物已领取，无法删除")
-    details = {"name": db_gift.name, "status": db_gift.status, "tier": db_gift.tier, "price": db_gift.price}
+    details = {"name": db_gift.name, "status": db_gift.status, "tier": db_gift.tier, "price": db_gift.price, "campaign_id": db_gift.campaign_id}
     db.query(UserAction).filter(UserAction.gift_id == gift_id).update({UserAction.gift_id: None}, synchronize_session=False)
     db.delete(db_gift)
-    log_admin_action(db, "admin_delete", None, {**details, "gift_id": gift_id})
+    log_admin_action(db, "admin_delete", None, {**details, "gift_id": gift_id}, db_gift.campaign_id)
     db.commit()
     return {"detail": "已删除"}
 
@@ -266,6 +288,7 @@ async def import_gifts(file: UploadFile = File(...), db: Session = Depends(get_d
                 return row[key]
         return None
 
+    campaign = get_active_campaign(db)
     created = 0
     errors = []
     for line_no, row in enumerate(reader, start=2):
@@ -277,10 +300,11 @@ async def import_gifts(file: UploadFile = File(...), db: Session = Depends(get_d
                 raise ValueError("名称不能为空")
             if tier not in VALID_TIERS:
                 raise ValueError("等级必须是 A、B 或 C")
-            price = float(price_raw)
+            price = Decimal(str(price_raw))
             if price < 0:
                 raise ValueError("价格不能为负数")
             gift = Gift(
+                campaign_id=campaign.id,
                 name=name,
                 url=(pick(row, "url") or "").strip() or None,
                 price=price,
@@ -291,7 +315,7 @@ async def import_gifts(file: UploadFile = File(...), db: Session = Depends(get_d
                 raise ValueError("状态必须是 available、locked、claimed 或 disabled")
             db.add(gift)
             db.flush()
-            log_admin_action(db, "admin_import", gift.id, {"filename": file.filename, "line": line_no})
+            log_admin_action(db, "admin_import", gift.id, {"filename": file.filename, "line": line_no}, gift.campaign_id)
             created += 1
         except Exception as exc:
             errors.append({"line": line_no, "error": str(exc)})
@@ -313,7 +337,7 @@ def bulk_delete_gifts(payload: BulkGiftRequest, db: Session = Depends(get_db), a
         raise HTTPException(status_code=400, detail=f"仅可删除未领取且未锁定礼物，以下礼物不可删除：{blocked}")
     for gift in gifts:
         deleted_id = gift.id
-        log_admin_action(db, "admin_bulk_delete", None, {"gift_id": deleted_id, "name": gift.name, "status": gift.status})
+        log_admin_action(db, "admin_bulk_delete", None, {"gift_id": deleted_id, "name": gift.name, "status": gift.status}, gift.campaign_id)
         db.query(UserAction).filter(UserAction.gift_id == deleted_id).update({UserAction.gift_id: None}, synchronize_session=False)
         db.delete(gift)
     db.commit()
@@ -327,7 +351,7 @@ def bulk_update_tier(payload: BulkTierRequest, db: Session = Depends(get_db), au
     for gift in gifts:
         before = gift.tier
         gift.tier = payload.tier
-        log_admin_action(db, "admin_bulk_tier", gift.id, {"before": before, "after": payload.tier})
+        log_admin_action(db, "admin_bulk_tier", gift.id, {"before": before, "after": payload.tier}, gift.campaign_id)
     db.commit()
     return {"detail": "批量调整等级完成", "updated": len(gifts)}
 
@@ -343,31 +367,55 @@ def bulk_update_status(payload: BulkStatusRequest, db: Session = Depends(get_db)
         gift.status = payload.status
         gift.locked_by = None
         gift.locked_at = None
-        log_admin_action(db, "admin_bulk_status", gift.id, {"before": before, "after": payload.status})
+        log_admin_action(db, "admin_bulk_status", gift.id, {"before": before, "after": payload.status}, gift.campaign_id)
     db.commit()
     return {"detail": "批量状态更新完成", "updated": len(gifts)}
 
 
+@router.get("/campaign/current", response_model=CampaignResponse)
+def get_current_campaign(db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+    return get_active_campaign(db)
+
+
+@router.put("/campaign/current", response_model=CampaignResponse)
+def update_current_campaign(payload: CampaignUpdate, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+    campaign = get_active_campaign(db)
+    update_data = payload.model_dump(exclude_unset=True)
+    starts_at = update_data.get("starts_at", campaign.starts_at)
+    ends_at = update_data.get("ends_at", campaign.ends_at)
+    if starts_at and ends_at and ends_at <= starts_at:
+        raise HTTPException(status_code=400, detail="活动结束时间必须晚于开始时间")
+    before = {key: getattr(campaign, key) for key in update_data.keys()}
+    for key, value in update_data.items():
+        setattr(campaign, key, value)
+    log_admin_action(db, "admin_campaign", None, {"before": before, "after": update_data}, campaign.id)
+    db.commit()
+    db.refresh(campaign)
+    return campaign
+
+
 @router.get("/stats")
 def get_stats(db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
-    release_expired_locks(db)
-    total = db.query(Gift).count()
-    available = db.query(Gift).filter(Gift.status == "available").count()
-    locked = db.query(Gift).filter(Gift.status == "locked").count()
-    claimed = db.query(Gift).filter(Gift.status == "claimed").count()
-    disabled = db.query(Gift).filter(Gift.status == "disabled").count()
-    claimed_value = db.query(func.coalesce(func.sum(Gift.price), 0)).filter(Gift.status == "claimed").scalar() or 0
+    campaign = get_active_campaign(db)
+    release_expired_locks(db, campaign)
+    total = db.query(Gift).filter(Gift.campaign_id == campaign.id).count()
+    available = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "available").count()
+    locked = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "locked").count()
+    claimed = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "claimed").count()
+    disabled = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "disabled").count()
+    claimed_value = db.query(func.coalesce(func.sum(Gift.price), 0)).filter(Gift.campaign_id == campaign.id, Gift.status == "claimed").scalar() or 0
 
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     today_participants = db.query(func.count(func.distinct(UserAction.fingerprint_id))).filter(
         UserAction.created_at >= today_start,
+        UserAction.campaign_id == campaign.id,
         UserAction.fingerprint_id != ADMIN_FINGERPRINT,
     ).scalar() or 0
-    active_sessions = db.query(DrawSession).filter(DrawSession.status == "active").count()
+    active_sessions = db.query(DrawSession).filter(DrawSession.campaign_id == campaign.id, DrawSession.status == "active").count()
 
     tier_stats = {}
     for tier in VALID_TIERS:
-        gifts = db.query(Gift).filter(Gift.tier == tier).all()
+        gifts = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.tier == tier).all()
         tier_stats[tier] = {
             "total": len(gifts),
             "available": len([g for g in gifts if g.status == "available"]),
@@ -375,14 +423,14 @@ def get_stats(db: Session = Depends(get_db), auth: bool = Depends(verify_admin))
             "claimed": len([g for g in gifts if g.status == "claimed"]),
             "disabled": len([g for g in gifts if g.status == "disabled"]),
             "remaining": len([g for g in gifts if g.status == "available"]),
-            "avg_price": round(sum(g.price for g in gifts) / len(gifts), 2) if gifts else 0,
+            "avg_price": round(float(sum(g.price for g in gifts) / len(gifts)), 2) if gifts else 0,
         }
 
     now = datetime.now()
-    locked_gifts = db.query(Gift).filter(Gift.status == "locked").order_by(Gift.locked_at.asc()).all()
+    locked_gifts = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "locked").order_by(Gift.locked_at.asc()).all()
     locked_details = []
     for gift in locked_gifts:
-        expires_at = gift.locked_at + timedelta(minutes=LOCK_TIMEOUT_MINUTES) if gift.locked_at else None
+        expires_at = gift.locked_at + timedelta(minutes=campaign.lock_timeout_minutes) if gift.locked_at else None
         remaining_seconds = max(0, int((expires_at - now).total_seconds())) if expires_at else 0
         locked_details.append({
             "id": gift.id,
@@ -394,7 +442,7 @@ def get_stats(db: Session = Depends(get_db), auth: bool = Depends(verify_admin))
             "remaining_seconds": remaining_seconds,
         })
 
-    recent_actions = db.query(UserAction).order_by(UserAction.created_at.desc()).limit(20).all()
+    recent_actions = db.query(UserAction).filter(UserAction.campaign_id == campaign.id).order_by(UserAction.created_at.desc()).limit(20).all()
     recent_action_payload = [
         {
             "id": action.id,
@@ -420,6 +468,7 @@ def get_stats(db: Session = Depends(get_db), auth: bool = Depends(verify_admin))
         "tiers": tier_stats,
         "locked_details": locked_details,
         "recent_actions": recent_action_payload,
+        "campaign": CampaignResponse.model_validate(campaign).model_dump(),
     }
 
 
@@ -430,36 +479,37 @@ def export_gifts(
     db: Session = Depends(get_db),
     auth: bool = Depends(verify_admin),
 ):
-    release_expired_locks(db)
+    campaign = get_active_campaign(db)
+    release_expired_locks(db, campaign)
     if export_type == "claimed":
-        gifts = db.query(Gift).filter(Gift.status == "claimed").order_by(Gift.tier, Gift.price).all()
+        gifts = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "claimed").order_by(Gift.tier, Gift.price).all()
         return _csv_response(
-            [[g.id, g.name, g.url or "", g.price, g.tier, g.status, g.created_at] for g in gifts],
+            [[g.id, g.name, g.url or "", float(g.price), g.tier, g.status, g.created_at] for g in gifts],
             ["ID", "名称", "链接", "价格", "等级", "状态", "创建时间"],
         )
     if export_type == "inventory":
-        gifts = db.query(Gift).order_by(Gift.tier, Gift.price).all()
+        gifts = db.query(Gift).filter(Gift.campaign_id == campaign.id).order_by(Gift.tier, Gift.price).all()
         return _csv_response(
-            [[g.id, g.name, g.url or "", g.price, g.tier, g.status, g.locked_by or "", g.locked_at or "", g.created_at] for g in gifts],
+            [[g.id, g.name, g.url or "", float(g.price), g.tier, g.status, g.locked_by or "", g.locked_at or "", g.created_at] for g in gifts],
             ["ID", "名称", "链接", "价格", "等级", "状态", "锁定用户", "锁定时间", "创建时间"],
         )
     if export_type == "locked":
-        gifts = db.query(Gift).filter(Gift.status == "locked").order_by(Gift.locked_at.asc()).all()
+        gifts = db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status == "locked").order_by(Gift.locked_at.asc()).all()
         return _csv_response(
-            [[g.id, g.name, g.price, g.tier, g.locked_by or "", g.locked_at or ""] for g in gifts],
+            [[g.id, g.name, float(g.price), g.tier, g.locked_by or "", g.locked_at or ""] for g in gifts],
             ["ID", "名称", "价格", "等级", "锁定用户", "锁定时间"],
         )
     if export_type == "actions":
-        actions = db.query(UserAction).order_by(UserAction.created_at.desc()).all()
+        actions = db.query(UserAction).filter(UserAction.campaign_id == campaign.id).order_by(UserAction.created_at.desc()).all()
         return _csv_response(
             [[a.id, a.fingerprint_id, a.gift_id or "", a.action, a.regret_used, a.details or "", a.created_at] for a in actions],
             ["ID", "操作者/用户", "礼物ID", "操作", "是否使用反悔", "详情", "创建时间"],
         )
 
-    claimed_actions = db.query(UserAction).filter(UserAction.action == "claim", UserAction.gift_id.isnot(None)).all()
+    claimed_actions = db.query(UserAction).filter(UserAction.campaign_id == campaign.id, UserAction.action == "claim", UserAction.gift_id.isnot(None)).all()
     gift_ids = [action.gift_id for action in claimed_actions]
     gifts_by_id = {gift.id: gift for gift in db.query(Gift).filter(Gift.id.in_(gift_ids)).all()} if gift_ids else {}
-    sessions = db.query(DrawSession).order_by(DrawSession.created_at.desc()).all()
+    sessions = db.query(DrawSession).filter(DrawSession.campaign_id == campaign.id).order_by(DrawSession.created_at.desc()).all()
     session_by_user = {}
     for session in sessions:
         session_by_user.setdefault(session.fingerprint_id, []).append(session)
@@ -473,7 +523,7 @@ def export_gifts(
             candidates = session_by_user.get(action.fingerprint_id, [])
             matched = next((s for s in candidates if s.created_at <= action.created_at), None)
             group_value = matched.id if matched else ""
-        rows.append([group_value, action.fingerprint_id, gift.id, gift.name, gift.price, gift.tier, action.created_at])
+        rows.append([group_value, action.fingerprint_id, gift.id, gift.name, float(gift.price), gift.tier, action.created_at])
     return _csv_response(rows, ["分组", "用户", "礼物ID", "名称", "价格", "等级", "领取时间"])
 
 
@@ -482,10 +532,11 @@ def reset_gifts(payload: ResetRequest, db: Session = Depends(get_db), auth: bool
     if payload.confirmation != "RESET":
         raise HTTPException(status_code=400, detail="请输入 RESET 确认重置")
 
+    campaign = get_active_campaign(db)
     snapshot_path = create_data_snapshot("pre_reset")
-    db.query(Gift).filter(Gift.status != "claimed").update(
+    db.query(Gift).filter(Gift.campaign_id == campaign.id, Gift.status != "claimed").update(
         {"status": "available", "locked_by": None, "locked_at": None}
     )
-    log_admin_action(db, "admin_reset", None, {"snapshot": snapshot_path})
+    log_admin_action(db, "admin_reset", None, {"snapshot": snapshot_path}, campaign.id)
     db.commit()
     return {"detail": "已重置所有礼物状态", "snapshot": snapshot_path}
