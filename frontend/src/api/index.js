@@ -55,12 +55,20 @@ api.interceptors.response.use(
 
 export const adminApi = {
   login: (password) => api.post('/admin/login', { password }),
-  getGifts: () => api.get('/admin/gifts'),
+  getGifts: (params) => api.get('/admin/gifts', { params }),
   createGift: (data) => api.post('/admin/gifts', data),
   updateGift: (id, data) => api.put(`/admin/gifts/${id}`, data),
   deleteGift: (id) => api.delete(`/admin/gifts/${id}`),
+  importGifts: (file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/admin/gifts/import', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
+  bulkDeleteGifts: (giftIds) => api.post('/admin/gifts/bulk-delete', { gift_ids: giftIds }),
+  bulkUpdateTier: (giftIds, tier) => api.post('/admin/gifts/bulk-tier', { gift_ids: giftIds, tier }),
+  bulkUpdateStatus: (giftIds, status) => api.post('/admin/gifts/bulk-status', { gift_ids: giftIds, status }),
   getStats: () => api.get('/admin/stats'),
-  exportGifts: () => api.post('/admin/export'),
+  exportGifts: (exportType = 'claimed', groupBy = 'session') => api.post('/admin/export', null, { params: { export_type: exportType, group_by: groupBy } }),
   resetGifts: (confirmation) => api.post('/admin/reset', { confirmation }),
 }
 

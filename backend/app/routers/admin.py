@@ -7,21 +7,27 @@ import json
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List
+from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from ..config import ADMIN_PASSWORD, ADMIN_TOKEN_EXPIRE_MINUTES, ADMIN_TOKEN_SECRET, DATABASE_URL
+from ..config import ADMIN_PASSWORD, ADMIN_TOKEN_EXPIRE_MINUTES, ADMIN_TOKEN_SECRET, DATABASE_URL, LOCK_TIMEOUT_MINUTES
 from ..database import get_db
+from ..models.draw_session import DrawSession
 from ..models.gift import Gift
 from ..models.user_action import UserAction
-from ..schemas.gift import GiftCreate, GiftResponse, GiftUpdate
+from ..schemas.gift import GiftCreate, GiftListResponse, GiftResponse, GiftUpdate
 from ..services.gift_state import release_expired_locks
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+VALID_TIERS = ("A", "B", "C")
+VALID_STATUSES = ("available", "locked", "claimed", "disabled")
+ADMIN_FINGERPRINT = "admin"
 
 
 class AdminLoginRequest(BaseModel):
@@ -36,6 +42,18 @@ class AdminLoginResponse(BaseModel):
 
 class ResetRequest(BaseModel):
     confirmation: str
+
+
+class BulkGiftRequest(BaseModel):
+    gift_ids: list[int] = Field(default_factory=list, min_length=1)
+
+
+class BulkTierRequest(BulkGiftRequest):
+    tier: str
+
+
+class BulkStatusRequest(BulkGiftRequest):
+    status: Literal["available", "disabled"]
 
 
 def _b64encode(data: bytes) -> str:
@@ -104,6 +122,48 @@ def create_data_snapshot(reason: str) -> str:
     return str(backup_path)
 
 
+def log_admin_action(db: Session, action: str, gift_id: int | None = None, details: dict | None = None):
+    log = UserAction(
+        fingerprint_id=ADMIN_FINGERPRINT,
+        gift_id=gift_id,
+        action=action[:40],
+        details=json.dumps(details or {}, ensure_ascii=False),
+    )
+    db.add(log)
+
+
+def _validate_tier(tier: str):
+    if tier not in VALID_TIERS:
+        raise HTTPException(status_code=400, detail="等级必须是 A、B 或 C")
+
+
+def _gift_query(db: Session, status_filter: str | None, tier: str | None, q: str | None, min_price: float | None, max_price: float | None):
+    query = db.query(Gift)
+    if status_filter:
+        if status_filter not in VALID_STATUSES:
+            raise HTTPException(status_code=400, detail="状态必须是 available、locked、claimed 或 disabled")
+        query = query.filter(Gift.status == status_filter)
+    if tier:
+        _validate_tier(tier)
+        query = query.filter(Gift.tier == tier)
+    if q:
+        keyword = f"%{q.strip()}%"
+        query = query.filter(or_(Gift.name.ilike(keyword), Gift.url.ilike(keyword)))
+    if min_price is not None:
+        query = query.filter(Gift.price >= min_price)
+    if max_price is not None:
+        query = query.filter(Gift.price <= max_price)
+    return query
+
+
+def _csv_response(rows: list[list], headers: list[str]) -> dict:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return {"csv": output.getvalue(), "count": len(rows)}
+
+
 @router.post("/login", response_model=AdminLoginResponse)
 def login(payload: AdminLoginRequest):
     if not hmac.compare_digest(payload.password, ADMIN_PASSWORD):
@@ -112,18 +172,34 @@ def login(payload: AdminLoginRequest):
     return AdminLoginResponse(token=token, expires_at=expires_at)
 
 
-@router.get("/gifts", response_model=List[GiftResponse])
-def list_gifts(db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+@router.get("/gifts", response_model=GiftListResponse)
+def list_gifts(
+    status_filter: str | None = Query(default=None, alias="status"),
+    tier: str | None = None,
+    q: str | None = None,
+    min_price: float | None = Query(default=None, ge=0),
+    max_price: float | None = Query(default=None, ge=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    auth: bool = Depends(verify_admin),
+):
     release_expired_locks(db)
-    return db.query(Gift).order_by(Gift.tier, Gift.price).all()
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(status_code=400, detail="最低价格不能高于最高价格")
+    query = _gift_query(db, status_filter, tier, q, min_price, max_price)
+    total = query.count()
+    gifts = query.order_by(Gift.tier, Gift.price, Gift.id).offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": gifts, "total": total, "page": page, "page_size": page_size}
 
 
 @router.post("/gifts", response_model=GiftResponse)
 def create_gift(gift: GiftCreate, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
-    if gift.tier not in ("A", "B", "C"):
-        raise HTTPException(status_code=400, detail="等级必须是 A、B 或 C")
+    _validate_tier(gift.tier)
     db_gift = Gift(**gift.model_dump())
     db.add(db_gift)
+    db.flush()
+    log_admin_action(db, "admin_create", db_gift.id, gift.model_dump())
     db.commit()
     db.refresh(db_gift)
     return db_gift
@@ -135,10 +211,14 @@ def update_gift(gift_id: int, gift: GiftUpdate, db: Session = Depends(get_db), a
     if not db_gift:
         raise HTTPException(status_code=404, detail="礼物不存在")
     update_data = gift.model_dump(exclude_unset=True)
-    if "tier" in update_data and update_data["tier"] not in ("A", "B", "C"):
-        raise HTTPException(status_code=400, detail="等级必须是 A、B 或 C")
+    if "tier" in update_data:
+        _validate_tier(update_data["tier"])
+    if "status" in update_data and update_data["status"] not in VALID_STATUSES:
+        raise HTTPException(status_code=400, detail="状态必须是 available、locked、claimed 或 disabled")
+    before = {key: getattr(db_gift, key) for key in update_data.keys()}
     for key, value in update_data.items():
         setattr(db_gift, key, value)
+    log_admin_action(db, "admin_edit", gift_id, {"before": before, "after": update_data})
     db.commit()
     db.refresh(db_gift)
     return db_gift
@@ -151,9 +231,121 @@ def delete_gift(gift_id: int, db: Session = Depends(get_db), auth: bool = Depend
         raise HTTPException(status_code=404, detail="礼物不存在")
     if db_gift.status == "locked":
         raise HTTPException(status_code=400, detail="礼物正在被锁定，无法删除")
+    if db_gift.status == "claimed":
+        raise HTTPException(status_code=400, detail="礼物已领取，无法删除")
+    details = {"name": db_gift.name, "status": db_gift.status, "tier": db_gift.tier, "price": db_gift.price}
+    db.query(UserAction).filter(UserAction.gift_id == gift_id).update({UserAction.gift_id: None}, synchronize_session=False)
     db.delete(db_gift)
+    log_admin_action(db, "admin_delete", None, {**details, "gift_id": gift_id})
     db.commit()
     return {"detail": "已删除"}
+
+
+@router.post("/gifts/import")
+async def import_gifts(file: UploadFile = File(...), db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+    content = await file.read()
+    try:
+        text_content = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV 文件必须使用 UTF-8 编码") from exc
+
+    reader = csv.DictReader(io.StringIO(text_content))
+    aliases = {
+        "name": ("name", "名称", "礼物名称"),
+        "url": ("url", "链接", "link"),
+        "price": ("price", "价格"),
+        "tier": ("tier", "等级"),
+        "status": ("status", "状态"),
+    }
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 文件缺少表头")
+
+    def pick(row, field):
+        for key in aliases[field]:
+            if key in row and row[key] not in (None, ""):
+                return row[key]
+        return None
+
+    created = 0
+    errors = []
+    for line_no, row in enumerate(reader, start=2):
+        try:
+            name = (pick(row, "name") or "").strip()
+            tier = (pick(row, "tier") or "").strip().upper()
+            price_raw = pick(row, "price")
+            if not name:
+                raise ValueError("名称不能为空")
+            if tier not in VALID_TIERS:
+                raise ValueError("等级必须是 A、B 或 C")
+            price = float(price_raw)
+            if price < 0:
+                raise ValueError("价格不能为负数")
+            gift = Gift(
+                name=name,
+                url=(pick(row, "url") or "").strip() or None,
+                price=price,
+                tier=tier,
+                status=((pick(row, "status") or "available").strip() or "available"),
+            )
+            if gift.status not in VALID_STATUSES:
+                raise ValueError("状态必须是 available、locked、claimed 或 disabled")
+            db.add(gift)
+            db.flush()
+            log_admin_action(db, "admin_import", gift.id, {"filename": file.filename, "line": line_no})
+            created += 1
+        except Exception as exc:
+            errors.append({"line": line_no, "error": str(exc)})
+    if errors:
+        db.rollback()
+        raise HTTPException(status_code=400, detail={"message": "CSV 导入失败，未写入任何礼物", "errors": errors[:20]})
+    db.commit()
+    return {"detail": "导入完成", "created": created}
+
+
+@router.post("/gifts/bulk-delete")
+def bulk_delete_gifts(payload: BulkGiftRequest, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+    gifts = db.query(Gift).filter(Gift.id.in_(payload.gift_ids)).all()
+    missing = set(payload.gift_ids) - {gift.id for gift in gifts}
+    blocked = [gift.id for gift in gifts if gift.status in ("locked", "claimed")]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"礼物不存在：{sorted(missing)}")
+    if blocked:
+        raise HTTPException(status_code=400, detail=f"仅可删除未领取且未锁定礼物，以下礼物不可删除：{blocked}")
+    for gift in gifts:
+        deleted_id = gift.id
+        log_admin_action(db, "admin_bulk_delete", None, {"gift_id": deleted_id, "name": gift.name, "status": gift.status})
+        db.query(UserAction).filter(UserAction.gift_id == deleted_id).update({UserAction.gift_id: None}, synchronize_session=False)
+        db.delete(gift)
+    db.commit()
+    return {"detail": "批量删除完成", "deleted": len(gifts)}
+
+
+@router.post("/gifts/bulk-tier")
+def bulk_update_tier(payload: BulkTierRequest, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+    _validate_tier(payload.tier)
+    gifts = db.query(Gift).filter(Gift.id.in_(payload.gift_ids)).all()
+    for gift in gifts:
+        before = gift.tier
+        gift.tier = payload.tier
+        log_admin_action(db, "admin_bulk_tier", gift.id, {"before": before, "after": payload.tier})
+    db.commit()
+    return {"detail": "批量调整等级完成", "updated": len(gifts)}
+
+
+@router.post("/gifts/bulk-status")
+def bulk_update_status(payload: BulkStatusRequest, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
+    gifts = db.query(Gift).filter(Gift.id.in_(payload.gift_ids)).all()
+    blocked = [gift.id for gift in gifts if gift.status in ("locked", "claimed")]
+    if blocked:
+        raise HTTPException(status_code=400, detail=f"锁定或已领取礼物不可批量切换可用性：{blocked}")
+    for gift in gifts:
+        before = gift.status
+        gift.status = payload.status
+        gift.locked_by = None
+        gift.locked_at = None
+        log_admin_action(db, "admin_bulk_status", gift.id, {"before": before, "after": payload.status})
+    db.commit()
+    return {"detail": "批量状态更新完成", "updated": len(gifts)}
 
 
 @router.get("/stats")
@@ -163,36 +355,126 @@ def get_stats(db: Session = Depends(get_db), auth: bool = Depends(verify_admin))
     available = db.query(Gift).filter(Gift.status == "available").count()
     locked = db.query(Gift).filter(Gift.status == "locked").count()
     claimed = db.query(Gift).filter(Gift.status == "claimed").count()
+    disabled = db.query(Gift).filter(Gift.status == "disabled").count()
+    claimed_value = db.query(func.coalesce(func.sum(Gift.price), 0)).filter(Gift.status == "claimed").scalar() or 0
+
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_participants = db.query(func.count(func.distinct(UserAction.fingerprint_id))).filter(
+        UserAction.created_at >= today_start,
+        UserAction.fingerprint_id != ADMIN_FINGERPRINT,
+    ).scalar() or 0
+    active_sessions = db.query(DrawSession).filter(DrawSession.status == "active").count()
 
     tier_stats = {}
-    for tier in ["A", "B", "C"]:
+    for tier in VALID_TIERS:
         gifts = db.query(Gift).filter(Gift.tier == tier).all()
         tier_stats[tier] = {
             "total": len(gifts),
             "available": len([g for g in gifts if g.status == "available"]),
             "locked": len([g for g in gifts if g.status == "locked"]),
             "claimed": len([g for g in gifts if g.status == "claimed"]),
+            "disabled": len([g for g in gifts if g.status == "disabled"]),
+            "remaining": len([g for g in gifts if g.status == "available"]),
             "avg_price": round(sum(g.price for g in gifts) / len(gifts), 2) if gifts else 0,
         }
+
+    now = datetime.now()
+    locked_gifts = db.query(Gift).filter(Gift.status == "locked").order_by(Gift.locked_at.asc()).all()
+    locked_details = []
+    for gift in locked_gifts:
+        expires_at = gift.locked_at + timedelta(minutes=LOCK_TIMEOUT_MINUTES) if gift.locked_at else None
+        remaining_seconds = max(0, int((expires_at - now).total_seconds())) if expires_at else 0
+        locked_details.append({
+            "id": gift.id,
+            "name": gift.name,
+            "tier": gift.tier,
+            "locked_by": gift.locked_by,
+            "locked_at": gift.locked_at,
+            "expires_at": expires_at,
+            "remaining_seconds": remaining_seconds,
+        })
+
+    recent_actions = db.query(UserAction).order_by(UserAction.created_at.desc()).limit(20).all()
+    recent_action_payload = [
+        {
+            "id": action.id,
+            "fingerprint_id": action.fingerprint_id,
+            "gift_id": action.gift_id,
+            "action": action.action,
+            "regret_used": action.regret_used,
+            "details": action.details,
+            "created_at": action.created_at,
+        }
+        for action in recent_actions
+    ]
 
     return {
         "total": total,
         "available": available,
         "locked": locked,
         "claimed": claimed,
+        "disabled": disabled,
+        "claimed_value": round(float(claimed_value), 2),
+        "today_participants": today_participants,
+        "active_sessions": active_sessions,
         "tiers": tier_stats,
+        "locked_details": locked_details,
+        "recent_actions": recent_action_payload,
     }
 
 
 @router.post("/export")
-def export_gifts(db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
-    gifts = db.query(Gift).filter(Gift.status == "claimed").all()
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["ID", "名称", "链接", "价格", "等级", "状态"])
-    for g in gifts:
-        writer.writerow([g.id, g.name, g.url or "", g.price, g.tier, g.status])
-    return {"csv": output.getvalue(), "count": len(gifts)}
+def export_gifts(
+    export_type: str = Query(default="claimed", pattern="^(claimed|inventory|locked|actions|grouped)$"),
+    group_by: str = Query(default="session", pattern="^(session|user)$"),
+    db: Session = Depends(get_db),
+    auth: bool = Depends(verify_admin),
+):
+    release_expired_locks(db)
+    if export_type == "claimed":
+        gifts = db.query(Gift).filter(Gift.status == "claimed").order_by(Gift.tier, Gift.price).all()
+        return _csv_response(
+            [[g.id, g.name, g.url or "", g.price, g.tier, g.status, g.created_at] for g in gifts],
+            ["ID", "名称", "链接", "价格", "等级", "状态", "创建时间"],
+        )
+    if export_type == "inventory":
+        gifts = db.query(Gift).order_by(Gift.tier, Gift.price).all()
+        return _csv_response(
+            [[g.id, g.name, g.url or "", g.price, g.tier, g.status, g.locked_by or "", g.locked_at or "", g.created_at] for g in gifts],
+            ["ID", "名称", "链接", "价格", "等级", "状态", "锁定用户", "锁定时间", "创建时间"],
+        )
+    if export_type == "locked":
+        gifts = db.query(Gift).filter(Gift.status == "locked").order_by(Gift.locked_at.asc()).all()
+        return _csv_response(
+            [[g.id, g.name, g.price, g.tier, g.locked_by or "", g.locked_at or ""] for g in gifts],
+            ["ID", "名称", "价格", "等级", "锁定用户", "锁定时间"],
+        )
+    if export_type == "actions":
+        actions = db.query(UserAction).order_by(UserAction.created_at.desc()).all()
+        return _csv_response(
+            [[a.id, a.fingerprint_id, a.gift_id or "", a.action, a.regret_used, a.details or "", a.created_at] for a in actions],
+            ["ID", "操作者/用户", "礼物ID", "操作", "是否使用反悔", "详情", "创建时间"],
+        )
+
+    claimed_actions = db.query(UserAction).filter(UserAction.action == "claim", UserAction.gift_id.isnot(None)).all()
+    gift_ids = [action.gift_id for action in claimed_actions]
+    gifts_by_id = {gift.id: gift for gift in db.query(Gift).filter(Gift.id.in_(gift_ids)).all()} if gift_ids else {}
+    sessions = db.query(DrawSession).order_by(DrawSession.created_at.desc()).all()
+    session_by_user = {}
+    for session in sessions:
+        session_by_user.setdefault(session.fingerprint_id, []).append(session)
+    rows = []
+    for action in claimed_actions:
+        gift = gifts_by_id.get(action.gift_id)
+        if not gift:
+            continue
+        group_value = action.fingerprint_id
+        if group_by == "session":
+            candidates = session_by_user.get(action.fingerprint_id, [])
+            matched = next((s for s in candidates if s.created_at <= action.created_at), None)
+            group_value = matched.id if matched else ""
+        rows.append([group_value, action.fingerprint_id, gift.id, gift.name, gift.price, gift.tier, action.created_at])
+    return _csv_response(rows, ["分组", "用户", "礼物ID", "名称", "价格", "等级", "领取时间"])
 
 
 @router.post("/reset")
@@ -204,6 +486,6 @@ def reset_gifts(payload: ResetRequest, db: Session = Depends(get_db), auth: bool
     db.query(Gift).filter(Gift.status != "claimed").update(
         {"status": "available", "locked_by": None, "locked_at": None}
     )
-    db.query(UserAction).delete()
+    log_admin_action(db, "admin_reset", None, {"snapshot": snapshot_path})
     db.commit()
     return {"detail": "已重置所有礼物状态", "snapshot": snapshot_path}

@@ -15,6 +15,7 @@ class GiftUpdate(BaseModel):
     url: Optional[str] = None
     price: Optional[float] = None
     tier: Optional[str] = None
+    status: Optional[str] = None
 
 
 class GiftResponse(BaseModel):
@@ -30,3 +31,10 @@ class GiftResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class GiftListResponse(BaseModel):
+    items: list[GiftResponse]
+    total: int
+    page: int
+    page_size: int
