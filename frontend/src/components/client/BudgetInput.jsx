@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
+import FeedbackMessage from './FeedbackMessage'
 
-export default function BudgetInput({ budget, setBudget, onSubmit, loading, error }) {
+export default function BudgetInput({ budget, setBudget, onSubmit, loading, error, loadingMessage }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -13,13 +14,17 @@ export default function BudgetInput({ budget, setBudget, onSubmit, loading, erro
         <input
           type="number"
           value={budget}
+          min="1"
           onChange={(e) => setBudget(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
           placeholder="0.00"
           className="w-full pl-10 pr-4 py-4 text-2xl text-center border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
         />
       </div>
-      {error && <p className="text-red-500 text-sm mb-3 text-center">{error}</p>}
+      <div className="mb-3 space-y-2">
+        {loading && <FeedbackMessage type="loading">{loadingMessage || '处理中，请稍候...'}</FeedbackMessage>}
+        <FeedbackMessage type="error">{error}</FeedbackMessage>
+      </div>
       <button
         onClick={onSubmit}
         disabled={loading || !budget}

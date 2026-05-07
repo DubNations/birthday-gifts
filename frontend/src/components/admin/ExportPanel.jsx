@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { adminApi } from '../../api'
+import { adminApi, getApiErrorMessage } from '../../api'
 
 export default function ExportPanel({ onRefresh }) {
   const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState('')
 
   const handleExport = async () => {
     setExporting(true)
+    setError('')
     try {
       const res = await adminApi.exportGifts()
       const blob = new Blob([res.data.csv], { type: 'text/csv;charset=utf-8;' })
@@ -15,23 +17,29 @@ export default function ExportPanel({ onRefresh }) {
       a.download = `gift_list_${new Date().toISOString().slice(0, 10)}.csv`
       a.click()
       URL.revokeObjectURL(url)
-    } catch {}
+    } catch (err) {
+      setError(getApiErrorMessage(err, '导出失败，请稍后重试'))
+    }
     setExporting(false)
   }
 
   const handleReset = async () => {
     const confirmation = prompt('此操作不可撤销。请输入 RESET 确认重置：')
     if (confirmation !== 'RESET') return
+    setError('')
     try {
       const res = await adminApi.resetGifts(confirmation)
       alert(`已重置，快照已保存：${res.data.snapshot}`)
       onRefresh?.()
-    } catch {}
+    } catch (err) {
+      setError(getApiErrorMessage(err, '重置失败，请稍后重试'))
+    }
   }
 
   return (
     <div className="card">
       <h3 className="text-xl font-bold text-gray-700 mb-4">数据操作</h3>
+      {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
       <div className="flex gap-4">
         <button onClick={handleExport} disabled={exporting} className="btn-primary">
           {exporting ? '导出中...' : '📥 导出送礼清单'}

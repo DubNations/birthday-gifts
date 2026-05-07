@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import GiftManager from '../components/admin/GiftManager'
 import ExportPanel from '../components/admin/ExportPanel'
-import { adminApi, setAdminToken } from '../api'
+import { adminApi, setAdminToken, getApiErrorMessage } from '../api'
 
 export default function AdminPage() {
   const [password, setPassword] = useState('')
   const [authenticated, setAuthenticated] = useState(false)
   const [stats, setStats] = useState(null)
   const [authError, setAuthError] = useState('')
+  const [statsError, setStatsError] = useState('')
 
   const handleLogin = async () => {
     try {
@@ -17,8 +18,8 @@ export default function AdminPage() {
       setStats(res.data)
       setAuthenticated(true)
       setAuthError('')
-    } catch {
-      setAuthError('密码错误')
+    } catch (err) {
+      setAuthError(getApiErrorMessage(err, '密码错误或登录失败'))
     }
   }
 
@@ -26,7 +27,10 @@ export default function AdminPage() {
     try {
       const res = await adminApi.getStats()
       setStats(res.data)
-    } catch {}
+      setStatsError('')
+    } catch (err) {
+      setStatsError(getApiErrorMessage(err, '刷新统计失败，请稍后重试'))
+    }
   }
 
   if (!authenticated) {
@@ -53,6 +57,7 @@ export default function AdminPage() {
     <div>
       <div className="mb-8">
         <h2 className="text-3xl font-bold text-primary-700 mb-4">管理后台</h2>
+        {statsError && <p className="text-red-500 text-sm mb-3">{statsError}</p>}
         {stats && (
           <div className="grid grid-cols-4 gap-4">
             <div className="card text-center">

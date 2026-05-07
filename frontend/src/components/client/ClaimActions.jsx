@@ -13,7 +13,7 @@ export default function ClaimActions({ giftId, onClaim, onRelease, regretRemaini
         disabled={loading}
         className="btn-primary text-lg px-10 py-3"
       >
-        ✅ 确认要送
+        {loading ? '处理中...' : '✅ 确认要送'}
       </button>
       {regretRemaining > 0 && (
         <button
@@ -21,7 +21,7 @@ export default function ClaimActions({ giftId, onClaim, onRelease, regretRemaini
           disabled={loading}
           className="btn-secondary text-sm"
         >
-          😅 反悔重抽（剩余 {regretRemaining} 次机会）
+          {loading ? '处理中...' : `😅 反悔重抽（剩余 ${regretRemaining} 次机会）`}
         </button>
       )}
       {regretRemaining <= 0 && (
