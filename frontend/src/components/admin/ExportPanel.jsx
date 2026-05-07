@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { adminApi } from '../../api'
 
-export default function ExportPanel({ password }) {
+export default function ExportPanel({ onRefresh }) {
   const [exporting, setExporting] = useState(false)
 
   const handleExport = async () => {
     setExporting(true)
     try {
-      const res = await adminApi.exportGifts(password)
+      const res = await adminApi.exportGifts()
       const blob = new Blob([res.data.csv], { type: 'text/csv;charset=utf-8;' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -20,10 +20,12 @@ export default function ExportPanel({ password }) {
   }
 
   const handleReset = async () => {
-    if (!confirm('确定重置所有礼物状态？此操作不可撤销！')) return
+    const confirmation = prompt('此操作不可撤销。请输入 RESET 确认重置：')
+    if (confirmation !== 'RESET') return
     try {
-      await adminApi.resetGifts(password)
-      alert('已重置')
+      const res = await adminApi.resetGifts(confirmation)
+      alert(`已重置，快照已保存：${res.data.snapshot}`)
+      onRefresh?.()
     } catch {}
   }
 

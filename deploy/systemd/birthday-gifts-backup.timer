@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Birthday Gifts database backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=birthday-gifts-backup.service
+
+[Install]
+WantedBy=timers.target

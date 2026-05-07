@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .database import engine, Base
+
+from .config import CORS_ORIGINS
+from .database import Base, SessionLocal, engine
 from .routers import admin, draw
 from .services.gift_state import release_expired_locks
-from .database import SessionLocal
 
 
 @asynccontextmanager
@@ -24,10 +26,10 @@ app = FastAPI(title="Birthday Gift System", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "X-Fingerprint"],
 )
 
 app.include_router(admin.router)

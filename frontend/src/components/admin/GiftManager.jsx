@@ -2,29 +2,29 @@ import { useState, useEffect } from 'react'
 import GiftForm from './GiftForm'
 import { adminApi } from '../../api'
 
-export default function GiftManager({ password, onRefresh }) {
+export default function GiftManager({ onRefresh }) {
   const [gifts, setGifts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [editingGift, setEditingGift] = useState(null)
 
   const fetchGifts = async () => {
     try {
-      const res = await adminApi.getGifts(password)
+      const res = await adminApi.getGifts()
       setGifts(res.data)
     } catch {}
   }
 
-  useEffect(() => { fetchGifts() }, [password])
+  useEffect(() => { fetchGifts() }, [])
 
   const handleCreate = async (data) => {
-    await adminApi.createGift(password, data)
+    await adminApi.createGift(data)
     setShowForm(false)
     fetchGifts()
     onRefresh()
   }
 
   const handleUpdate = async (id, data) => {
-    await adminApi.updateGift(password, id, data)
+    await adminApi.updateGift(id, data)
     setEditingGift(null)
     fetchGifts()
     onRefresh()
@@ -32,7 +32,7 @@ export default function GiftManager({ password, onRefresh }) {
 
   const handleDelete = async (id) => {
     if (!confirm('确定删除此礼物？')) return
-    await adminApi.deleteGift(password, id)
+    await adminApi.deleteGift(id)
     fetchGifts()
     onRefresh()
   }

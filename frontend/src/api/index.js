@@ -5,22 +5,46 @@ const api = axios.create({
   timeout: 10000,
 })
 
+export const setAdminToken = (token) => {
+  if (token) {
+    localStorage.setItem('admin_token', token)
+  } else {
+    localStorage.removeItem('admin_token')
+  }
+}
+
 api.interceptors.request.use((config) => {
   const fp = localStorage.getItem('fingerprint_id')
   if (fp) {
     config.headers['X-Fingerprint'] = fp
   }
+
+  const token = localStorage.getItem('admin_token')
+  if (token && config.url?.startsWith('/admin')) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
   return config
 })
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('admin_token')
+    }
+    return Promise.reject(error)
+  },
+)
+
 export const adminApi = {
-  getGifts: (password) => api.get('/admin/gifts', { params: { password } }),
-  createGift: (password, data) => api.post('/admin/gifts', data, { params: { password } }),
-  updateGift: (password, id, data) => api.put(`/admin/gifts/${id}`, data, { params: { password } }),
-  deleteGift: (password, id) => api.delete(`/admin/gifts/${id}`, { params: { password } }),
-  getStats: (password) => api.get('/admin/stats', { params: { password } }),
-  exportGifts: (password) => api.post('/admin/export', null, { params: { password } }),
-  resetGifts: (password) => api.post('/admin/reset', null, { params: { password } }),
+  login: (password) => api.post('/admin/login', { password }),
+  getGifts: () => api.get('/admin/gifts'),
+  createGift: (data) => api.post('/admin/gifts', data),
+  updateGift: (id, data) => api.put(`/admin/gifts/${id}`, data),
+  deleteGift: (id) => api.delete(`/admin/gifts/${id}`),
+  getStats: () => api.get('/admin/stats'),
+  exportGifts: () => api.post('/admin/export'),
+  resetGifts: (confirmation) => api.post('/admin/reset', { confirmation }),
 }
 
 export const drawApi = {

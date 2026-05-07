@@ -1,0 +1,10 @@
+[Unit]
+Description=Backup Birthday Gifts SQLite database
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/birthday-gifts/backend
+EnvironmentFile=/opt/birthday-gifts/.env
+ExecStart=/opt/birthday-gifts/deploy/scripts/backup_sqlite.sh
