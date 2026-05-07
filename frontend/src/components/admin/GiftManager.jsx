@@ -1,40 +1,59 @@
 import { useState, useEffect } from 'react'
 import GiftForm from './GiftForm'
-import { adminApi } from '../../api'
+import { adminApi, getApiErrorMessage } from '../../api'
 
 export default function GiftManager({ onRefresh }) {
   const [gifts, setGifts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [editingGift, setEditingGift] = useState(null)
+  const [error, setError] = useState('')
 
   const fetchGifts = async () => {
     try {
       const res = await adminApi.getGifts()
       setGifts(res.data)
-    } catch {}
+      setError('')
+    } catch (err) {
+      setError(getApiErrorMessage(err, '获取礼物列表失败，请稍后重试'))
+    }
   }
 
   useEffect(() => { fetchGifts() }, [])
 
   const handleCreate = async (data) => {
-    await adminApi.createGift(data)
-    setShowForm(false)
-    fetchGifts()
-    onRefresh()
+    try {
+      await adminApi.createGift(data)
+      setShowForm(false)
+      setError('')
+      fetchGifts()
+      onRefresh()
+    } catch (err) {
+      setError(getApiErrorMessage(err, '创建礼物失败，请稍后重试'))
+    }
   }
 
   const handleUpdate = async (id, data) => {
-    await adminApi.updateGift(id, data)
-    setEditingGift(null)
-    fetchGifts()
-    onRefresh()
+    try {
+      await adminApi.updateGift(id, data)
+      setEditingGift(null)
+      setError('')
+      fetchGifts()
+      onRefresh()
+    } catch (err) {
+      setError(getApiErrorMessage(err, '更新礼物失败，请稍后重试'))
+    }
   }
 
   const handleDelete = async (id) => {
     if (!confirm('确定删除此礼物？')) return
-    await adminApi.deleteGift(id)
-    fetchGifts()
-    onRefresh()
+    try {
+      await adminApi.deleteGift(id)
+      setError('')
+      fetchGifts()
+      onRefresh()
+    } catch (err) {
+      setError(getApiErrorMessage(err, '删除礼物失败，请稍后重试'))
+    }
   }
 
   const tierLabel = (t) => ({ A: '高级', B: '中级', C: '普通' }[t] || t)
@@ -48,6 +67,8 @@ export default function GiftManager({ onRefresh }) {
           + 添加礼物
         </button>
       </div>
+
+      {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
 
       {showForm && (
         <GiftForm

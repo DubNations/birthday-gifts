@@ -1,5 +1,22 @@
 import axios from 'axios'
 
+export const getApiErrorMessage = (error, fallback = '请求失败，请稍后重试') => {
+  if (error?.code === 'ECONNABORTED') return '请求超时，请检查网络后重试'
+  if (!error?.response) return error?.message ? `网络异常：${error.message}` : fallback
+
+  const detail = error.response.data?.detail || error.response.data?.message
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item.msg || item.message || JSON.stringify(item)).join('；')
+  }
+  if (typeof detail === 'object' && detail !== null) {
+    return detail.msg || detail.message || JSON.stringify(detail)
+  }
+  if (detail) return detail
+
+  const statusText = error.response.statusText || '服务器错误'
+  return `${fallback}（${error.response.status} ${statusText}）`
+}
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 10000,
@@ -68,8 +85,11 @@ export const drawApi = {
     gift_id: giftId,
     session_id: sessionId,
   }),
-  getStatus: (fingerprintId) => api.get('/draw/status', {
-    params: { fingerprint_id: fingerprintId },
+  getStatus: (fingerprintId, sessionId) => api.get('/draw/status', {
+    params: {
+      fingerprint_id: fingerprintId,
+      ...(sessionId ? { session_id: sessionId } : {}),
+    },
   }),
 }
 

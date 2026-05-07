@@ -1,53 +1,81 @@
-import { useState, useEffect, useMemo } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import DrawAnimation from '../components/client/DrawAnimation'
 import ResultCard from '../components/client/ResultCard'
 import ClaimActions from '../components/client/ClaimActions'
+import CompletionSummary from '../components/client/CompletionSummary'
+import FeedbackMessage from '../components/client/FeedbackMessage'
 import { useDrawStore } from '../store/drawStore'
 import { useFingerprint } from '../hooks/useFingerprint'
+
+const nextActionText = {
+  claim_or_release: '确认或反悔',
+  completed: '已完成',
+  spin: '继续抽奖',
+  start: '重新选择方案',
+}
 
 export default function DrawPage() {
   const location = useLocation()
   const { fingerprint } = useFingerprint()
+  const searchParams = new URLSearchParams(location.search)
+  const initialSessionId = location.state?.sessionId || searchParams.get('session_id') || localStorage.getItem('draw_session_id')
   const {
-    spinGift, claimGift, releaseGift, fetchStatus, loading, error,
-    regretRemaining, currentGift, activeSession, remainingDraws, nextAction,
+    spinGift, claimGift, releaseGift, fetchStatus, loading, error, success, loadingMessage,
+    regretRemaining, currentGift, activeSession, remainingDraws, nextAction, claimedGifts,
   } = useDrawStore()
   const [plan, setPlan] = useState(location.state?.plan || null)
-  const [sessionId, setSessionId] = useState(location.state?.sessionId || null)
+  const [sessionId, setSessionId] = useState(initialSessionId || null)
   const [budget] = useState(location.state?.budget || 0)
-  const [phase, setPhase] = useState('ready')
+  const [phase, setPhase] = useState('restoring')
+  const [hasRestored, setHasRestored] = useState(false)
+
+  const applyStatusToPage = useCallback((status) => {
+    if (!status) return false
+    if (status.session_id) setSessionId(status.session_id)
+    if (status.active_session?.plan_detail?.original_plan) {
+      setPlan(status.active_session.plan_detail.original_plan)
+    }
+    if (status.locked_gift) {
+      setPhase('result')
+    } else if (status.next_action === 'completed' || status.status === 'completed') {
+      setPhase('done')
+    } else if (status.active_session && status.next_action !== 'start') {
+      setPhase('ready')
+    } else {
+      setPhase('missing')
+    }
+    return true
+  }, [])
 
   useEffect(() => {
     if (!fingerprint) return
-    fetchStatus(fingerprint).then((status) => {
-      if (!status) return
-      if (status.session_id) setSessionId(status.session_id)
-      if (status.active_session?.plan_detail?.original_plan && !plan) {
-        setPlan(status.active_session.plan_detail.original_plan)
+    let ignore = false
+    fetchStatus(fingerprint, initialSessionId).then((status) => {
+      if (ignore) return
+      if (!applyStatusToPage(status)) {
+        setPhase('missing')
       }
-      if (status.locked_gift) {
-        setPhase('result')
-      } else if (status.next_action === 'completed') {
-        setPhase('done')
-      } else {
-        setPhase('ready')
-      }
+      setHasRestored(true)
     })
-  }, [fingerprint])
+    return () => {
+      ignore = true
+    }
+  }, [applyStatusToPage, fetchStatus, fingerprint, initialSessionId])
 
   const planDetail = activeSession?.plan_detail || location.state?.planDetail || null
+  const originalPlan = plan || planDetail?.original_plan || null
   const spinQueue = useMemo(() => {
-    const draws = planDetail?.original_plan?.draws || plan?.draws || {}
+    const draws = planDetail?.original_plan?.draws || originalPlan?.draws || {}
     const queue = []
     for (const tier of ['A', 'B', 'C']) {
-      for (let i = 0; i < (draws[tier] || 0); i++) {
+      for (let i = 0; i < (draws[tier] || 0); i += 1) {
         queue.push(tier)
       }
     }
     return queue
-  }, [plan, planDetail])
+  }, [originalPlan, planDetail])
 
   const completedCount = useMemo(() => {
     if (planDetail?.tiers) {
@@ -63,11 +91,8 @@ export default function DrawPage() {
 
   const refreshAfterAction = async () => {
     if (!fingerprint) return null
-    const status = await fetchStatus(fingerprint)
-    if (status?.active_session?.plan_detail?.original_plan) {
-      setPlan(status.active_session.plan_detail.original_plan)
-    }
-    if (status?.session_id) setSessionId(status.session_id)
+    const status = await fetchStatus(fingerprint, effectiveSessionId)
+    applyStatusToPage(status)
     return status
   }
 
@@ -87,7 +112,7 @@ export default function DrawPage() {
     const ok = await claimGift(fingerprint, giftId, effectiveSessionId)
     if (ok) {
       const status = await refreshAfterAction()
-      setPhase(status?.next_action === 'completed' ? 'done' : 'ready')
+      setPhase(status?.next_action === 'completed' || status?.status === 'completed' ? 'done' : 'ready')
     }
   }
 
@@ -99,10 +124,25 @@ export default function DrawPage() {
     }
   }
 
-  if (!plan && !activeSession) {
+  if (phase === 'restoring' || (!hasRestored && loading)) {
     return (
-      <div className="text-center py-20">
-        <p className="text-gray-500 text-lg">请先从首页选择方案</p>
+      <div className="max-w-2xl mx-auto py-20">
+        <FeedbackMessage type="loading">{loadingMessage || '正在根据当前设备恢复抽奖进度...'}</FeedbackMessage>
+      </div>
+    )
+  }
+
+  if (phase === 'missing' || (!originalPlan && !activeSession)) {
+    return (
+      <div className="max-w-2xl mx-auto py-20 text-center">
+        <div className="card">
+          <h2 className="text-2xl font-bold text-primary-700 mb-3">暂无可恢复的抽奖流程</h2>
+          <p className="text-gray-500 mb-5">请先从首页输入预算并选择方案；如果刚刚开始过抽奖，请刷新页面重试。</p>
+          <div className="mb-5">
+            <FeedbackMessage type="error">{error}</FeedbackMessage>
+          </div>
+          <Link to="/" className="btn-primary">返回首页</Link>
+        </div>
       </div>
     )
   }
@@ -111,14 +151,14 @@ export default function DrawPage() {
     <div className="max-w-2xl mx-auto">
       <div className="card mb-6">
         <h2 className="text-2xl font-bold text-primary-700 mb-2">抽奖方案</h2>
-        <p className="text-gray-600">{plan?.description || planDetail?.original_plan?.description}</p>
+        <p className="text-gray-600">{originalPlan?.description || '已恢复进行中的抽奖方案'}</p>
         <p className="text-sm text-gray-400 mt-1">
-          预计花费: ¥{plan?.estimated_cost || planDetail?.original_plan?.estimated_cost || budget} | 反悔机会剩余: {regretRemaining} 次
+          预计花费: ¥{originalPlan?.estimated_cost || activeSession?.budget || budget} | 反悔机会剩余: {regretRemaining} 次
         </p>
         <p className="text-xs text-gray-400 mt-1">
-          会话 #{effectiveSessionId} | 下一步: {nextAction === 'claim_or_release' ? '确认或反悔' : nextAction === 'completed' ? '已完成' : '继续抽奖'}
+          会话 #{effectiveSessionId} | 下一步: {nextActionText[nextAction] || '继续抽奖'}
         </p>
-        <div className="flex gap-2 mt-3">
+        <div className="flex flex-wrap gap-2 mt-3">
           {spinQueue.map((tier, i) => (
             <span
               key={`${tier}-${i}`}
@@ -135,11 +175,11 @@ export default function DrawPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-          {error}
-        </div>
-      )}
+      <div className="space-y-3 mb-4">
+        {loading && phase !== 'spinning' && <FeedbackMessage type="loading">{loadingMessage || '处理中，请稍候...'}</FeedbackMessage>}
+        <FeedbackMessage type="error">{error}</FeedbackMessage>
+        <FeedbackMessage type="success">{success}</FeedbackMessage>
+      </div>
 
       <AnimatePresence mode="wait">
         {phase === 'ready' && currentTier && (
@@ -148,13 +188,14 @@ export default function DrawPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="text-center py-10"
+            className="card text-center py-10"
           >
+            <p className="text-sm text-gray-500 mb-2">当前没有待确认的锁定礼物</p>
             <p className="text-lg text-gray-600 mb-6">
-              第 {completedCount + 1} 次抽奖 — {currentTier} 级礼物
+              下一次抽奖：第 {completedCount + 1} 次 — {currentTier} 级礼物
             </p>
             <button onClick={handleSpin} disabled={loading || !effectiveSessionId} className="btn-primary text-lg px-10 py-3">
-              🎰 开始抽奖
+              {loading ? '抽取中...' : '🎰 开始抽奖'}
             </button>
           </motion.div>
         )}
@@ -189,16 +230,7 @@ export default function DrawPage() {
         )}
 
         {phase === 'done' && (
-          <motion.div
-            key="done"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-center py-10"
-          >
-            <div className="text-6xl mb-4">🎉</div>
-            <h3 className="text-2xl font-bold text-primary-700 mb-2">抽奖完成！</h3>
-            <p className="text-gray-600">感谢参与，祝生日快乐！</p>
-          </motion.div>
+          <CompletionSummary gifts={claimedGifts} />
         )}
       </AnimatePresence>
     </div>
