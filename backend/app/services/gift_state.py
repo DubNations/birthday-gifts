@@ -1,21 +1,33 @@
 import random
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import func
 from ..models.gift import Gift
 from ..models.user_action import UserAction
 from ..config import LOCK_TIMEOUT_MINUTES, MAX_REGRET_CHANCES
 
 
+MAX_LOCK_RETRIES = 5
+
+
 def lock_gift(db: Session, gift_id: int, fingerprint_id: str) -> Gift:
-    gift = db.query(Gift).filter(
-        Gift.id == gift_id, Gift.status == "available"
-    ).with_for_update().first()
-    if not gift:
+    """Atomically transition an available gift into a locked gift."""
+    now = datetime.now()
+    updated = db.query(Gift).filter(
+        Gift.id == gift_id,
+        Gift.status == "available",
+    ).update(
+        {
+            Gift.status: "locked",
+            Gift.locked_by: fingerprint_id,
+            Gift.locked_at: now,
+        },
+        synchronize_session=False,
+    )
+    if updated != 1:
+        db.rollback()
         return None
-    gift.status = "locked"
-    gift.locked_by = fingerprint_id
-    gift.locked_at = datetime.now()
+
     log = UserAction(
         fingerprint_id=fingerprint_id,
         gift_id=gift_id,
@@ -23,7 +35,8 @@ def lock_gift(db: Session, gift_id: int, fingerprint_id: str) -> Gift:
     )
     db.add(log)
     db.commit()
-    db.refresh(gift)
+
+    gift = db.query(Gift).filter(Gift.id == gift_id).first()
     return gift
 
 
@@ -105,14 +118,22 @@ def release_expired_locks(db: Session) -> int:
 
 
 def draw_random_gift(db: Session, tier: str, fingerprint_id: str) -> Gift:
-    available = db.query(Gift).filter(
-        Gift.tier == tier,
-        Gift.status == "available",
-    ).all()
-    if not available:
-        return None
-    chosen = random.choice(available)
-    return lock_gift(db, chosen.id, fingerprint_id)
+    """Draw and lock a random gift with finite retries to avoid races."""
+    for _ in range(MAX_LOCK_RETRIES):
+        candidates = db.query(Gift.id).filter(
+            Gift.tier == tier,
+            Gift.status == "available",
+        ).order_by(func.random()).limit(MAX_LOCK_RETRIES).all()
+        if not candidates:
+            return None
+
+        candidate_ids = [candidate.id for candidate in candidates]
+        random.shuffle(candidate_ids)
+        for gift_id in candidate_ids:
+            gift = lock_gift(db, gift_id, fingerprint_id)
+            if gift:
+                return gift
+    return None
 
 
 def get_regret_remaining(db: Session, fingerprint_id: str) -> int:
