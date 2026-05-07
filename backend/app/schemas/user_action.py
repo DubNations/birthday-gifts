@@ -9,6 +9,7 @@ class UserActionResponse(BaseModel):
     gift_id: Optional[int] = None
     action: str
     regret_used: bool
+    details: Optional[str] = None
     created_at: datetime
 
     class Config:
