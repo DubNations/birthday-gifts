@@ -4,18 +4,19 @@ from sqlalchemy.orm.attributes import flag_modified
 from ..database import get_db
 from ..models.gift import Gift
 from ..models.draw_session import DrawSession
+from ..models.campaign import Campaign
 from ..schemas.draw import (
     PlanRequest, PlansResponse, DrawPlan,
     DrawStartRequest, DrawStartResponse, SpinRequest,
     ClaimRequest, ReleaseRequest, DrawStatusResponse,
 )
-from ..services.budget_allocator import generate_plans
+from ..services.budget_allocator import generate_plans, money
 from ..services.gift_state import (
     draw_random_gift, claim_gift, release_gift,
     get_regret_remaining, release_expired_locks,
 )
-from ..config import MAX_REGRET_CHANCES
 from ..services.identity import validate_fingerprint, has_active_lock, get_regret_count
+from ..services.campaign import get_active_campaign
 
 router = APIRouter(prefix="/api/draw", tags=["draw"])
 
@@ -27,15 +28,23 @@ def gift_payload(gift: Gift) -> dict:
         "gift_id": gift.id,
         "name": gift.name,
         "tier": gift.tier,
-        "price": gift.price,
+        "price": float(gift.price),
         "url": gift.url,
     }
+
+
+def serialize_plan(plan: dict) -> dict:
+    serialized = dict(plan)
+    for key in ("estimated_cost", "min_possible_cost", "max_possible_cost", "remaining_budget_estimate"):
+        if key in serialized:
+            serialized[key] = float(serialized[key])
+    return serialized
 
 
 def build_plan_detail(selected_plan: dict) -> dict:
     draws = {tier: int(selected_plan.get("draws", {}).get(tier, 0) or 0) for tier in TIERS}
     return {
-        "original_plan": selected_plan,
+        "original_plan": serialize_plan(selected_plan),
         "tiers": {
             tier: {
                 "total": draws[tier],
@@ -60,7 +69,7 @@ def normalize_plan_detail(session: DrawSession) -> dict:
             "plan_type": session.plan_type,
             "description": session.plan_type or "",
             "draws": original_draws,
-            "estimated_cost": session.budget,
+            "estimated_cost": money(session.budget),
         })
     for tier in TIERS:
         tier_state = detail.setdefault("tiers", {}).setdefault(tier, {})
@@ -109,34 +118,42 @@ def refresh_session_progress(session: DrawSession, detail: dict | None = None) -
     return detail
 
 
-def get_active_session(db: Session, fingerprint_id: str) -> DrawSession | None:
-    return db.query(DrawSession).filter(
+def get_active_session(db: Session, fingerprint_id: str, campaign_id: int | None = None) -> DrawSession | None:
+    query = db.query(DrawSession).filter(
         DrawSession.fingerprint_id == fingerprint_id,
         DrawSession.status == "active",
-    ).order_by(DrawSession.created_at.desc()).first()
+    )
+    if campaign_id is not None:
+        query = query.filter(DrawSession.campaign_id == campaign_id)
+    return query.order_by(DrawSession.created_at.desc()).first()
 
 
-def get_request_session(db: Session, fingerprint_id: str, session_id: int | None = None) -> DrawSession | None:
+def get_request_session(db: Session, fingerprint_id: str, session_id: int | None = None, campaign_id: int | None = None) -> DrawSession | None:
     query = db.query(DrawSession).filter(DrawSession.fingerprint_id == fingerprint_id)
+    if campaign_id is not None:
+        query = query.filter(DrawSession.campaign_id == campaign_id)
     if session_id:
         return query.filter(DrawSession.id == session_id).first()
     return query.filter(DrawSession.status == "active").order_by(DrawSession.created_at.desc()).first()
 
 
-def status_payload(db: Session, fingerprint_id: str) -> dict:
-    session = get_active_session(db, fingerprint_id)
+def status_payload(db: Session, fingerprint_id: str, campaign: Campaign) -> dict:
+    session = get_active_session(db, fingerprint_id, campaign.id)
     if not session:
         session = db.query(DrawSession).filter(
             DrawSession.fingerprint_id == fingerprint_id,
+            DrawSession.campaign_id == campaign.id,
             DrawSession.status == "completed",
         ).order_by(DrawSession.created_at.desc()).first()
     locked_gifts = db.query(Gift).filter(
         Gift.locked_by == fingerprint_id,
         Gift.status == "locked",
+        Gift.campaign_id == campaign.id,
     ).all()
     from ..models.user_action import UserAction
     claimed_ids = [row.gift_id for row in db.query(UserAction.gift_id).filter(
         UserAction.fingerprint_id == fingerprint_id,
+        UserAction.campaign_id == campaign.id,
         UserAction.action == "claim",
         UserAction.gift_id.isnot(None),
     ).all()]
@@ -145,7 +162,7 @@ def status_payload(db: Session, fingerprint_id: str) -> dict:
     locked_list = [gift_payload(g) for g in locked_gifts]
     claimed_list = [gift_payload(g) for g in claimed]
     locked_gift = locked_list[0] if locked_list else None
-    regret_remaining = get_regret_remaining(db, fingerprint_id)
+    regret_remaining = get_regret_remaining(db, fingerprint_id, campaign.id, campaign.max_regret_chances)
     remaining_draws = {tier: 0 for tier in TIERS}
     active_session = None
     next_action = "start"
@@ -163,7 +180,7 @@ def status_payload(db: Session, fingerprint_id: str) -> dict:
         }
         active_session = {
             "session_id": session.id,
-            "budget": session.budget,
+            "budget": float(session.budget),
             "plan_type": session.plan_type,
             "plan_detail": detail,
             "created_at": session.created_at,
@@ -194,12 +211,28 @@ def status_payload(db: Session, fingerprint_id: str) -> dict:
     }
 
 
+@router.get("/campaign")
+def get_campaign(db: Session = Depends(get_db)):
+    campaign = get_active_campaign(db)
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "status": campaign.status,
+        "lock_timeout_minutes": campaign.lock_timeout_minutes,
+        "max_regret_chances": campaign.max_regret_chances,
+        "starts_at": campaign.starts_at,
+        "ends_at": campaign.ends_at,
+        "created_at": campaign.created_at,
+    }
+
+
 @router.post("/plans", response_model=PlansResponse)
 def get_plans(request: PlanRequest, db: Session = Depends(get_db)):
     if request.budget <= 0:
         raise HTTPException(status_code=400, detail="预算必须大于0")
-    release_expired_locks(db)
-    plans = generate_plans(request.budget, db)
+    campaign = get_active_campaign(db)
+    release_expired_locks(db, campaign)
+    plans = generate_plans(request.budget, db, campaign.id)
     return PlansResponse(plans=[DrawPlan(**p) for p in plans])
 
 
@@ -207,16 +240,17 @@ def get_plans(request: PlanRequest, db: Session = Depends(get_db)):
 def start_draw(request: DrawStartRequest, db: Session = Depends(get_db)):
     if not validate_fingerprint(request.fingerprint_id):
         raise HTTPException(status_code=400, detail="无效的用户标识")
-    if has_active_lock(db, request.fingerprint_id):
+    campaign = get_active_campaign(db)
+    if has_active_lock(db, request.fingerprint_id, campaign.id):
         raise HTTPException(status_code=400, detail="您还有未处理的抽奖结果")
 
-    release_expired_locks(db)
-    plans = generate_plans(request.budget, db)
+    release_expired_locks(db, campaign)
+    plans = generate_plans(request.budget, db, campaign.id)
     selected_plan = next((p for p in plans if p["plan_type"] == request.plan_type), None)
     if not selected_plan or selected_plan["plan_type"] == "none":
         raise HTTPException(status_code=400, detail="无效的方案类型")
 
-    existing = get_active_session(db, request.fingerprint_id)
+    existing = get_active_session(db, request.fingerprint_id, campaign.id)
     if existing:
         existing.status = "cancelled"
         existing_detail = normalize_plan_detail(existing)
@@ -226,8 +260,9 @@ def start_draw(request: DrawStartRequest, db: Session = Depends(get_db)):
 
     plan_detail = build_plan_detail(selected_plan)
     session = DrawSession(
+        campaign_id=campaign.id,
         fingerprint_id=request.fingerprint_id,
-        budget=request.budget,
+        budget=money(request.budget),
         plan_type=request.plan_type,
         plan_detail=plan_detail,
         status="active",
@@ -247,16 +282,17 @@ def start_draw(request: DrawStartRequest, db: Session = Depends(get_db)):
 def spin_gift(request: SpinRequest, db: Session = Depends(get_db)):
     if not validate_fingerprint(request.fingerprint_id):
         raise HTTPException(status_code=400, detail="无效的用户标识")
-    release_expired_locks(db)
+    campaign = get_active_campaign(db)
+    release_expired_locks(db, campaign)
 
     session = db.query(DrawSession).filter(DrawSession.id == request.session_id).with_for_update().first()
-    if not session or session.fingerprint_id != request.fingerprint_id:
+    if not session or session.fingerprint_id != request.fingerprint_id or session.campaign_id != campaign.id:
         raise HTTPException(status_code=403, detail="抽奖会话不属于当前用户")
     if session.status != "active":
         raise HTTPException(status_code=400, detail="抽奖会话不是进行中状态")
-    if has_active_lock(db, request.fingerprint_id):
+    if has_active_lock(db, request.fingerprint_id, campaign.id):
         raise HTTPException(status_code=400, detail="您还有未处理的抽奖结果")
-    if get_regret_count(db, request.fingerprint_id) > MAX_REGRET_CHANCES:
+    if get_regret_count(db, request.fingerprint_id, campaign.id) > campaign.max_regret_chances:
         raise HTTPException(status_code=400, detail="反悔次数异常，已超过允许次数")
     detail = refresh_session_progress(session)
     tier = get_next_tier(detail)
@@ -268,7 +304,7 @@ def spin_gift(request: SpinRequest, db: Session = Depends(get_db)):
     if tier_state["claimed"] >= tier_state["total"]:
         raise HTTPException(status_code=400, detail=f"{tier}级抽奖次数已用完")
 
-    gift = draw_random_gift(db, tier, request.fingerprint_id)
+    gift = draw_random_gift(db, tier, request.fingerprint_id, campaign.id)
     if not gift:
         raise HTTPException(status_code=404, detail=f"没有可用的{tier}级礼物")
 
@@ -287,8 +323,9 @@ def spin_gift(request: SpinRequest, db: Session = Depends(get_db)):
 def claim(request: ClaimRequest, db: Session = Depends(get_db)):
     if not validate_fingerprint(request.fingerprint_id):
         raise HTTPException(status_code=400, detail="无效的用户标识")
-    session = get_request_session(db, request.fingerprint_id, request.session_id)
-    gift = claim_gift(db, request.gift_id, request.fingerprint_id)
+    campaign = get_active_campaign(db)
+    session = get_request_session(db, request.fingerprint_id, request.session_id, campaign.id)
+    gift = claim_gift(db, request.gift_id, request.fingerprint_id, campaign.id)
     if not gift:
         raise HTTPException(status_code=400, detail="无法确认领取，礼物可能已释放或非您锁定")
 
@@ -306,10 +343,11 @@ def claim(request: ClaimRequest, db: Session = Depends(get_db)):
 def release(request: ReleaseRequest, db: Session = Depends(get_db)):
     if not validate_fingerprint(request.fingerprint_id):
         raise HTTPException(status_code=400, detail="无效的用户标识")
-    if get_regret_remaining(db, request.fingerprint_id) <= 0:
+    campaign = get_active_campaign(db)
+    if get_regret_remaining(db, request.fingerprint_id, campaign.id, campaign.max_regret_chances) <= 0:
         raise HTTPException(status_code=400, detail="反悔次数已用完")
-    session = get_request_session(db, request.fingerprint_id, request.session_id)
-    gift = release_gift(db, request.gift_id, request.fingerprint_id)
+    session = get_request_session(db, request.fingerprint_id, request.session_id, campaign.id)
+    gift = release_gift(db, request.gift_id, request.fingerprint_id, campaign.id, campaign.max_regret_chances)
     if not gift:
         raise HTTPException(status_code=400, detail="无法反悔，可能已无反悔机会或礼物非您锁定")
 
@@ -327,5 +365,6 @@ def release(request: ReleaseRequest, db: Session = Depends(get_db)):
 def get_status(fingerprint_id: str, db: Session = Depends(get_db)):
     if not validate_fingerprint(fingerprint_id):
         raise HTTPException(status_code=400, detail="无效的用户标识")
-    release_expired_locks(db)
-    return DrawStatusResponse(**status_payload(db, fingerprint_id))
+    campaign = get_active_campaign(db)
+    release_expired_locks(db, campaign)
+    return DrawStatusResponse(**status_payload(db, fingerprint_id, campaign))

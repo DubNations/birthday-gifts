@@ -10,6 +10,8 @@ export default function AdminPage() {
   const [authError, setAuthError] = useState('')
   const [statsError, setStatsError] = useState('')
   const [statsLoading, setStatsLoading] = useState(false)
+  const [campaignForm, setCampaignForm] = useState(null)
+  const [campaignMessage, setCampaignMessage] = useState('')
 
   const handleLogin = async () => {
     try {
@@ -18,6 +20,7 @@ export default function AdminPage() {
       setAdminToken(loginRes.data.token)
       const res = await adminApi.getStats()
       setStats(res.data)
+      setCampaignForm(toCampaignForm(res.data.campaign))
       setAuthenticated(true)
       setAuthError('')
     } catch (err) {
@@ -32,9 +35,56 @@ export default function AdminPage() {
       setStatsLoading(true)
       const res = await adminApi.getStats()
       setStats(res.data)
+      setCampaignForm(toCampaignForm(res.data.campaign))
       setStatsError('')
     } catch (err) {
       setStatsError(getApiErrorMessage(err, '刷新统计失败，请稍后重试'))
+    } finally {
+      setStatsLoading(false)
+    }
+  }
+
+
+  const toCampaignForm = (campaign) => campaign ? ({
+    name: campaign.name || '',
+    status: campaign.status || 'active',
+    lock_timeout_minutes: String(campaign.lock_timeout_minutes || 15),
+    max_regret_chances: String(campaign.max_regret_chances ?? 1),
+    starts_at: toDateTimeLocal(campaign.starts_at),
+    ends_at: toDateTimeLocal(campaign.ends_at),
+  }) : null
+
+  const toDateTimeLocal = (value) => {
+    if (!value) return ''
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+    const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    return offsetDate.toISOString().slice(0, 16)
+  }
+
+  const fromDateTimeLocal = (value) => value ? new Date(value).toISOString() : null
+
+  const updateCampaignField = (field, value) => {
+    setCampaignForm(prev => ({ ...prev, [field]: value }))
+  }
+
+  const handleCampaignSave = async () => {
+    try {
+      setStatsLoading(true)
+      const payload = {
+        name: campaignForm.name,
+        status: campaignForm.status,
+        lock_timeout_minutes: Number(campaignForm.lock_timeout_minutes),
+        max_regret_chances: Number(campaignForm.max_regret_chances),
+        starts_at: fromDateTimeLocal(campaignForm.starts_at),
+        ends_at: fromDateTimeLocal(campaignForm.ends_at),
+      }
+      const res = await adminApi.updateCampaign(payload)
+      setCampaignForm(toCampaignForm(res.data))
+      setCampaignMessage('活动配置已保存')
+      await refreshStats()
+    } catch (err) {
+      setCampaignMessage(getApiErrorMessage(err, '保存活动配置失败'))
     } finally {
       setStatsLoading(false)
     }
@@ -58,6 +108,7 @@ export default function AdminPage() {
     admin_bulk_tier: '批量调级',
     admin_bulk_status: '批量状态',
     admin_reset: '管理员重置',
+    admin_campaign: '活动配置',
   }[action] || action)
 
   if (!authenticated) {
@@ -90,6 +141,44 @@ export default function AdminPage() {
         {statsError && <p className="text-red-500 text-sm mb-3">{statsError}</p>}
         {stats && (
           <>
+
+            {campaignForm && (
+              <div className="card mb-4">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="font-bold text-gray-700">当前活动配置</h3>
+                    <p className="text-xs text-gray-500">抽奖规则会从当前 active 活动读取，保存后立即影响新抽奖和锁定倒计时。</p>
+                  </div>
+                  <button onClick={handleCampaignSave} disabled={statsLoading} className="btn-primary text-sm">保存活动</button>
+                </div>
+                {campaignMessage && <p className="text-sm text-primary-600 mb-3">{campaignMessage}</p>}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <label className="text-sm text-gray-600">活动名称
+                    <input value={campaignForm.name} onChange={(e) => updateCampaignField('name', e.target.value)} className="mt-1 w-full px-3 py-2 border rounded-lg" />
+                  </label>
+                  <label className="text-sm text-gray-600">状态
+                    <select value={campaignForm.status} onChange={(e) => updateCampaignField('status', e.target.value)} className="mt-1 w-full px-3 py-2 border rounded-lg">
+                      <option value="active">active</option>
+                      <option value="paused">paused</option>
+                      <option value="draft">draft</option>
+                      <option value="ended">ended</option>
+                    </select>
+                  </label>
+                  <label className="text-sm text-gray-600">锁定分钟
+                    <input type="number" min="1" value={campaignForm.lock_timeout_minutes} onChange={(e) => updateCampaignField('lock_timeout_minutes', e.target.value)} className="mt-1 w-full px-3 py-2 border rounded-lg" />
+                  </label>
+                  <label className="text-sm text-gray-600">反悔次数
+                    <input type="number" min="0" value={campaignForm.max_regret_chances} onChange={(e) => updateCampaignField('max_regret_chances', e.target.value)} className="mt-1 w-full px-3 py-2 border rounded-lg" />
+                  </label>
+                  <label className="text-sm text-gray-600">开始时间
+                    <input type="datetime-local" value={campaignForm.starts_at} onChange={(e) => updateCampaignField('starts_at', e.target.value)} className="mt-1 w-full px-3 py-2 border rounded-lg" />
+                  </label>
+                  <label className="text-sm text-gray-600">结束时间
+                    <input type="datetime-local" value={campaignForm.ends_at} onChange={(e) => updateCampaignField('ends_at', e.target.value)} className="mt-1 w-full px-3 py-2 border rounded-lg" />
+                  </label>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
               <div className="card text-center"><div className="text-3xl font-bold text-gray-700">{stats.total}</div><div className="text-sm text-gray-500">总礼物</div></div>
               <div className="card text-center"><div className="text-3xl font-bold text-green-600">{stats.available}</div><div className="text-sm text-gray-500">可抽取</div></div>
