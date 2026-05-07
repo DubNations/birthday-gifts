@@ -1,12 +1,15 @@
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List
 from sqlalchemy.orm import Session
 from ..models.gift import Gift
 
 
+TIERS = ["A", "B", "C"]
+
+
 def get_tier_stats(db: Session) -> Dict[str, Dict]:
     gifts = db.query(Gift).filter(Gift.status == "available").all()
-    tiers = {"A": [], "B": [], "C": []}
+    tiers = {tier: [] for tier in TIERS}
     for g in gifts:
         if g.tier in tiers:
             tiers[g.tier].append(g.price)
@@ -26,10 +29,10 @@ def get_tier_stats(db: Session) -> Dict[str, Dict]:
 
 
 def allocate_premium_first(budget: float, stats: Dict[str, Dict]) -> Dict[str, int]:
-    draws = {"A": 0, "B": 0, "C": 0}
+    draws = {tier: 0 for tier in TIERS}
     remaining = budget
 
-    for tier in ["A", "B", "C"]:
+    for tier in TIERS:
         s = stats.get(tier, {"avg_price": 0, "count": 0})
         if s["avg_price"] <= 0 or s["count"] <= 0:
             continue
@@ -38,7 +41,7 @@ def allocate_premium_first(budget: float, stats: Dict[str, Dict]) -> Dict[str, i
         remaining -= n * s["avg_price"]
 
     if sum(draws.values()) == 0:
-        for tier in ["A", "B", "C"]:
+        for tier in TIERS:
             s = stats.get(tier, {"avg_price": 0, "count": 0})
             if s["min_price"] > 0 and budget >= s["min_price"] and s["count"] > 0:
                 draws[tier] = 1
@@ -48,11 +51,11 @@ def allocate_premium_first(budget: float, stats: Dict[str, Dict]) -> Dict[str, i
 
 
 def allocate_diverse(budget: float, stats: Dict[str, Dict]) -> Dict[str, int]:
-    draws = {"A": 0, "B": 0, "C": 0}
+    draws = {tier: 0 for tier in TIERS}
     remaining = budget
 
     available_tiers = []
-    for tier in ["A", "B", "C"]:
+    for tier in TIERS:
         s = stats.get(tier, {"avg_price": 0, "count": 0})
         if s["avg_price"] > 0 and s["count"] > 0:
             available_tiers.append(tier)
@@ -77,12 +80,12 @@ def allocate_diverse(budget: float, stats: Dict[str, Dict]) -> Dict[str, int]:
 
 def apply_fallback(draws: Dict[str, int], stats: Dict[str, Dict]) -> Dict[str, int]:
     result = dict(draws)
-    for tier in ["A", "B", "C"]:
+    for tier in TIERS:
         s = stats.get(tier, {"count": 0})
         if result[tier] > s["count"]:
             overflow = result[tier] - s["count"]
             result[tier] = s["count"]
-            lower_tiers = [t for t in ["A", "B", "C"] if t > tier]
+            lower_tiers = [t for t in TIERS if t > tier]
             for lt in lower_tiers:
                 ls = stats.get(lt, {"count": 0, "avg_price": 0})
                 if ls["count"] > result[lt] and ls["avg_price"] > 0:
@@ -132,7 +135,7 @@ def generate_plans(budget: float, db: Session) -> List[dict]:
 
     if not plans:
         min_prices = []
-        for tier in ["A", "B", "C"]:
+        for tier in TIERS:
             s = stats.get(tier, {"min_price": 0, "count": 0})
             if s["count"] > 0:
                 min_prices.append((tier, s["min_price"]))
@@ -144,7 +147,7 @@ def generate_plans(budget: float, db: Session) -> List[dict]:
         plans.append({
             "plan_type": "none",
             "description": suggestion,
-            "draws": {"A": 0, "B": 0, "C": 0},
+            "draws": {tier: 0 for tier in TIERS},
             "estimated_cost": 0,
         })
 

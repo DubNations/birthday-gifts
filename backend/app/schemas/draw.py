@@ -27,20 +27,33 @@ class DrawStartRequest(BaseModel):
 class DrawStartResponse(BaseModel):
     session_id: int
     draws: Dict[str, int]
+    plan_detail: dict
+
+
+class SpinRequest(BaseModel):
+    fingerprint_id: str
+    session_id: int
 
 
 class ClaimRequest(BaseModel):
     fingerprint_id: str
     gift_id: int
+    session_id: Optional[int] = None
 
 
 class ReleaseRequest(BaseModel):
     fingerprint_id: str
     gift_id: int
+    session_id: Optional[int] = None
 
 
 class DrawStatusResponse(BaseModel):
     session_id: int
     status: str
+    active_session: Optional[dict] = None
+    locked_gift: Optional[dict] = None
     locked_gifts: List[dict]
+    claimed_gifts: List[dict]
+    remaining_draws: Dict[str, int]
     regret_remaining: int
+    next_action: str

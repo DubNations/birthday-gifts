@@ -10,6 +10,10 @@ class DrawSession(Base):
     fingerprint_id = Column(String(200), nullable=False, index=True)
     budget = Column(Float, nullable=False)
     plan_type = Column(String(50), nullable=True)
-    plan_detail = Column(JSON, nullable=True)
-    status = Column(String(20), default="active")
+    plan_detail = Column(
+        JSON,
+        nullable=True,
+        comment="Recoverable draw progress: original_plan, tier totals/counters, state, and next action.",
+    )
+    status = Column(String(20), default="active", index=True)
     created_at = Column(DateTime, server_default=func.now())

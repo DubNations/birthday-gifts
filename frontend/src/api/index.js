@@ -54,16 +54,19 @@ export const drawApi = {
     budget,
     plan_type: planType,
   }),
-  spinGift: (tier, fingerprintId) => api.post('/draw/spin', null, {
-    params: { tier, fingerprint_id: fingerprintId },
+  spinGift: (sessionId, fingerprintId) => api.post('/draw/spin', {
+    session_id: sessionId,
+    fingerprint_id: fingerprintId,
   }),
-  claimGift: (fingerprintId, giftId) => api.post('/draw/claim', {
+  claimGift: (fingerprintId, giftId, sessionId) => api.post('/draw/claim', {
     fingerprint_id: fingerprintId,
     gift_id: giftId,
+    session_id: sessionId,
   }),
-  releaseGift: (fingerprintId, giftId) => api.post('/draw/release', {
+  releaseGift: (fingerprintId, giftId, sessionId) => api.post('/draw/release', {
     fingerprint_id: fingerprintId,
     gift_id: giftId,
+    session_id: sessionId,
   }),
   getStatus: (fingerprintId) => api.get('/draw/status', {
     params: { fingerprint_id: fingerprintId },

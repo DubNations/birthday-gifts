@@ -9,7 +9,7 @@ import { useFingerprint } from '../hooks/useFingerprint'
 export default function HomePage() {
   const navigate = useNavigate()
   const { fingerprint } = useFingerprint()
-  const { plans, fetchPlans, selectedPlan, setSelectedPlan, loading, error } = useDrawStore()
+  const { plans, fetchPlans, setSelectedPlan, startDraw, loading, error } = useDrawStore()
   const [budget, setBudget] = useState('')
   const [step, setStep] = useState('input')
 
@@ -22,9 +22,20 @@ export default function HomePage() {
     }
   }
 
-  const handlePlanSelect = (plan) => {
+  const handlePlanSelect = async (plan) => {
+    if (!fingerprint) return
     setSelectedPlan(plan)
-    navigate('/draw', { state: { budget: parseFloat(budget), plan } })
+    const started = await startDraw(fingerprint, parseFloat(budget), plan)
+    if (started) {
+      navigate('/draw', {
+        state: {
+          budget: parseFloat(budget),
+          plan: { ...plan, draws: started.draws },
+          sessionId: started.session_id,
+          planDetail: started.plan_detail,
+        },
+      })
+    }
   }
 
   return (
