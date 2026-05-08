@@ -18,7 +18,7 @@ export const getApiErrorMessage = (error, fallback = '请求失败，请稍后�
 }
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 10000,
 })
 

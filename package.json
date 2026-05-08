@@ -1,0 +1,14 @@
+{
+  "name": "birthday-gifts",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm run vercel-build",
+    "preview": "npm --prefix frontend run preview",
+    "vercel-build": "cd frontend && npm ci && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
