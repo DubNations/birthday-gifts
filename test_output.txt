@@ -1,0 +1,13 @@
+1. Login: OK
+2. Added 16 gifts
+3. Budget=3000:
+   高级优先: 1张A券 + 1张B券 + 1张C券 (预算递减) | draws={'A': 1, 'B': 1, 'C': 1} | cost=2417
+   均衡多样: 1张A券 + 1张B券 + 1张C券 (预算递减) | draws={'A': 1, 'B': 1, 'C': 1} | cost=2417
+3. Budget=800:
+   高级优先: 1张B券 + 1张C券 (预算递减) | draws={'A': 0, 'B': 1, 'C': 1} | cost=418
+   均衡多样: 1张B券 + 1张C券 (预算递减) | draws={'A': 0, 'B': 1, 'C': 1} | cost=418
+4. Start session 3, remaining=3000, draws={'A': 1, 'B': 1, 'C': 1}
+   Spin A: Apple Watch SE price=1999 <=3000:True
+5. Budget=800 session 4, draws={'A': 0, 'B': 1, 'C': 1}
+   Spin B: SK-II price=599 <=800:True (pool:399/599/999/1999/2499)
+DONE
