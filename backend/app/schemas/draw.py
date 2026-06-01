@@ -31,6 +31,12 @@ class DrawStartResponse(BaseModel):
     remaining_budget: float
 
 
+class SpinRequest(BaseModel):
+    tier: str
+    fingerprint_id: str
+    session_id: int
+
+
 class ClaimRequest(BaseModel):
     fingerprint_id: str
     gift_id: int

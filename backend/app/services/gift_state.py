@@ -72,10 +72,11 @@ def release_expired_locks(db: Session) -> int:
     ).all()
     count = 0
     for gift in expired:
+        original_owner = gift.locked_by or 'system'
         gift.status = 'available'
         gift.locked_by = None
         gift.locked_at = None
-        log = UserAction(fingerprint_id=gift.locked_by or 'system',
+        log = UserAction(fingerprint_id=original_owner,
                          gift_id=gift.id, action='release')
         db.add(log)
         count += 1
@@ -92,7 +93,9 @@ def draw_from_tier_with_budget(db: Session, tier: str, fingerprint_id: str,
     ).all()
     if not available:
         return None, '该等级没有预算范围内的可用礼物，剩余预算不足'
-    chosen = random.choice(available)
+    # 按权重随机抽取
+    weights = [g.weight for g in available]
+    chosen = random.choices(available, weights=weights, k=1)[0]
     gift = lock_gift(db, chosen.id, fingerprint_id)
     if not gift:
         return None, '礼物已被他人锁定'

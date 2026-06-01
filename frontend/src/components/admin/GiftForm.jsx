@@ -6,6 +6,7 @@ export default function GiftForm({ gift, onSubmit, onCancel }) {
     url: gift?.url || '',
     price: gift?.price || '',
     tier: gift?.tier || 'A',
+    weight: gift?.weight ?? 10,
   })
 
   const handleSubmit = (e) => {
@@ -13,6 +14,7 @@ export default function GiftForm({ gift, onSubmit, onCancel }) {
     onSubmit({
       ...form,
       price: parseFloat(form.price),
+      weight: parseInt(form.weight, 10),
     })
   }
 
@@ -54,11 +56,31 @@ export default function GiftForm({ gift, onSubmit, onCancel }) {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">购买链接</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              抽奖权重
+              <span className="ml-1 text-xs text-gray-400 font-normal">(1-100，越大越容易抽到)</span>
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={form.weight}
+              onChange={(e) => setForm({ ...form, weight: e.target.value })}
+              required
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+            />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              购买链接
+              <span className="ml-1 text-xs text-red-400 font-normal">* 必填，用户抽到后需要点击此链接去购买</span>
+            </label>
             <input
               type="url"
               value={form.url}
               onChange={(e) => setForm({ ...form, url: e.target.value })}
+              placeholder="https://..."
+              required
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
             />
           </div>
@@ -73,3 +95,4 @@ export default function GiftForm({ gift, onSubmit, onCancel }) {
     </div>
   )
 }
+

@@ -3,50 +3,57 @@ import io
 import time
 import secrets
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.gift import Gift
 from ..models.user_action import UserAction
+from ..models.admin_session import AdminSession
 from ..schemas.gift import GiftCreate, GiftUpdate, GiftResponse, GiftStatusUpdate
 from ..config import ADMIN_PASSWORD, ADMIN_SESSION_HOURS
 from ..services.gift_state import release_expired_locks
 
 router = APIRouter(prefix='/api/admin', tags=['admin'])
 
-_admin_sessions = {}
 
-def _clean_sessions():
+def _clean_expired_sessions(db: Session):
     now = time.time()
-    expired = [k for k, v in _admin_sessions.items() if v['expires'] < now]
-    for k in expired:
-        del _admin_sessions[k]
+    db.query(AdminSession).filter(AdminSession.expires_at < now).delete()
+    db.commit()
+
 
 def verify_admin(
-    password: str = Query(default=''),
     authorization: str = Header(default=''),
+    db: Session = Depends(get_db),
 ):
-    _clean_sessions()
     if authorization.startswith('Bearer '):
         token = authorization[7:]
-        session = _admin_sessions.get(token)
-        if session and session['expires'] > time.time():
+        session = db.query(AdminSession).filter(
+            AdminSession.token == token,
+            AdminSession.expires_at > time.time(),
+        ).first()
+        if session:
             return True
-    if password and password == ADMIN_PASSWORD:
-        return True
     raise HTTPException(status_code=403, detail='未授权访问')
 
 
+class LoginRequest(BaseModel):
+    password: str
+
+
 @router.post('/login')
-def admin_login(password: str):
-    if password != ADMIN_PASSWORD:
+def admin_login(body: LoginRequest, db: Session = Depends(get_db)):
+    if body.password != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail='密码错误')
-    _clean_sessions()
+    _clean_expired_sessions(db)
     token = secrets.token_hex(32)
-    _admin_sessions[token] = {
-        'created': time.time(),
-        'expires': time.time() + ADMIN_SESSION_HOURS * 3600,
-    }
+    session = AdminSession(
+        token=token,
+        expires_at=time.time() + ADMIN_SESSION_HOURS * 3600,
+    )
+    db.add(session)
+    db.commit()
     return {
         'token': token,
         'expires_in': ADMIN_SESSION_HOURS * 3600,
@@ -64,6 +71,8 @@ def list_gifts(db: Session = Depends(get_db), auth: bool = Depends(verify_admin)
 def create_gift(gift: GiftCreate, db: Session = Depends(get_db), auth: bool = Depends(verify_admin)):
     if gift.tier not in ('A', 'B', 'C'):
         raise HTTPException(status_code=400, detail='等级必须是 A、B 或 C')
+    if gift.weight < 1 or gift.weight > 100:
+        raise HTTPException(status_code=400, detail='权重必须在 1-100 之间')
     db_gift = Gift(**gift.model_dump())
     db.add(db_gift)
     db.commit()
@@ -79,6 +88,8 @@ def update_gift(gift_id: int, gift: GiftUpdate, db: Session = Depends(get_db), a
     update_data = gift.model_dump(exclude_unset=True)
     if 'tier' in update_data and update_data['tier'] not in ('A', 'B', 'C'):
         raise HTTPException(status_code=400, detail='等级必须是 A、B 或 C')
+    if 'weight' in update_data and (update_data['weight'] < 1 or update_data['weight'] > 100):
+        raise HTTPException(status_code=400, detail='权重必须在 1-100 之间')
     for key, value in update_data.items():
         setattr(db_gift, key, value)
     db.commit()

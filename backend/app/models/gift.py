@@ -11,7 +11,9 @@ class Gift(Base):
     url = Column(Text, nullable=True)
     price = Column(Float, nullable=False)
     tier = Column(String(1), nullable=False)
+    weight = Column(Integer, default=10, nullable=False)  # 抽奖权重，默认10，数值越大越容易抽到
     status = Column(String(20), default="available")
     locked_by = Column(String(200), nullable=True)
     locked_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+

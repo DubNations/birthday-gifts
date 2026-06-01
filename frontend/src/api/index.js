@@ -14,7 +14,7 @@ api.interceptors.request.use((config) => {
 })
 
 export const adminApi = {
-  login: (password) => api.post('/admin/login', null, { params: { password } }),
+  login: (password) => api.post('/admin/login', { password }),
   getGifts: () => api.get('/admin/gifts'),
   createGift: (data) => api.post('/admin/gifts', data),
   updateGift: (id, data) => api.put('/admin/gifts/' + id, data),
@@ -30,8 +30,8 @@ export const drawApi = {
   startDraw: (fingerprintId, budget, planType) => api.post('/draw/start', {
     fingerprint_id: fingerprintId, budget, plan_type: planType,
   }),
-  spinGift: (tier, fingerprintId, sessionId) => api.post('/draw/spin', null, {
-    params: { tier, fingerprint_id: fingerprintId, session_id: sessionId },
+  spinGift: (tier, fingerprintId, sessionId) => api.post('/draw/spin', {
+    tier, fingerprint_id: fingerprintId, session_id: sessionId,
   }),
   claimGift: (fingerprintId, giftId) => api.post('/draw/claim', {
     fingerprint_id: fingerprintId, gift_id: giftId,

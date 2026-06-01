@@ -5,7 +5,7 @@ from ..models.gift import Gift
 from ..models.draw_session import DrawSession
 from ..schemas.draw import (
     PlanRequest, PlansResponse, DrawPlan,
-    DrawStartRequest, DrawStartResponse,
+    DrawStartRequest, DrawStartResponse, SpinRequest,
     ClaimRequest, ReleaseRequest, DrawStatusResponse,
 )
 from ..services.budget_allocator import generate_plans, get_tier_stats
@@ -65,26 +65,25 @@ def start_draw(request: DrawStartRequest, db: Session = Depends(get_db)):
 
 
 @router.post('/spin')
-def spin_gift(tier: str, fingerprint_id: str, session_id: int,
-              db: Session = Depends(get_db)):
-    if not validate_fingerprint(fingerprint_id):
+def spin_gift(request: SpinRequest, db: Session = Depends(get_db)):
+    if not validate_fingerprint(request.fingerprint_id):
         raise HTTPException(status_code=400, detail='无效的用户标识')
 
     release_expired_locks(db)
     session = db.query(DrawSession).filter(
-        DrawSession.id == session_id,
-        DrawSession.fingerprint_id == fingerprint_id,
+        DrawSession.id == request.session_id,
+        DrawSession.fingerprint_id == request.fingerprint_id,
         DrawSession.status == 'active',
     ).first()
     if not session:
         raise HTTPException(status_code=404, detail='抽奖会话不存在或已结束')
 
     remaining = session.remaining_budget or 0
-    gift, err = draw_from_tier_with_budget(db, tier, fingerprint_id, remaining)
+    gift, err = draw_from_tier_with_budget(db, request.tier, request.fingerprint_id, remaining)
     if not gift:
-        raise HTTPException(status_code=404, detail=err or f'没有可用的{tier}级礼物')
+        raise HTTPException(status_code=404, detail=err or f'没有可用的{request.tier}级礼物')
 
-    avail_count = get_available_in_budget(db, tier, remaining)
+    avail_count = get_available_in_budget(db, request.tier, remaining)
 
     return {
         'gift_id': gift.id,
