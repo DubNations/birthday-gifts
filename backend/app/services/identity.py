@@ -1,12 +1,13 @@
 from sqlalchemy.orm import Session
 from ..models.user_action import UserAction
-from ..config import MAX_REGRET_CHANCES
+from ..models.system_config import get_max_regret
 
 
 def validate_fingerprint(fingerprint_id: str) -> bool:
-    if not fingerprint_id or len(fingerprint_id) < 8:
+    """校验手机号格式：11位纯数字"""
+    if not fingerprint_id or len(fingerprint_id) != 11:
         return False
-    return True
+    return fingerprint_id.isdigit()
 
 
 def get_user_actions(db: Session, fingerprint_id: str):
@@ -32,4 +33,5 @@ def get_regret_count(db: Session, fingerprint_id: str) -> int:
 
 
 def can_regret(db: Session, fingerprint_id: str) -> bool:
-    return get_regret_count(db, fingerprint_id) < MAX_REGRET_CHANCES
+    max_regret = get_max_regret(db)
+    return get_regret_count(db, fingerprint_id) < max_regret

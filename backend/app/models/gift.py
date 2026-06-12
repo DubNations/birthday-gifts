@@ -15,5 +15,7 @@ class Gift(Base):
     status = Column(String(20), default="available")
     locked_by = Column(String(200), nullable=True)
     locked_at = Column(DateTime, nullable=True)
+    claimed_by = Column(String(200), nullable=True)
+    claimed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 

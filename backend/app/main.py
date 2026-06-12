@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 from .database import engine, Base
 from .routers import admin, draw
 from .services.gift_state import release_expired_locks
@@ -11,8 +13,8 @@ from .utils.migrate import migrate
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    migrate()
     Base.metadata.create_all(bind=engine)
+    migrate()
     db = SessionLocal()
     try:
         released = release_expired_locks(db)
@@ -35,6 +37,14 @@ app.add_middleware(
 
 app.include_router(admin.router)
 app.include_router(draw.router)
+
+
+@app.exception_handler(OperationalError)
+async def db_locked_handler(request, exc):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "系统繁忙，请稍后重试"},
+    )
 
 
 @app.get("/")

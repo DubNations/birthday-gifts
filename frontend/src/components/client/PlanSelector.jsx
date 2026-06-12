@@ -29,7 +29,7 @@ export default function PlanSelector({ plans, onSelect, onBack }) {
                   {plan.description}
                 </h3>
                 <p className="text-sm text-gray-500">
-                  {'☺'} {'最低花费'} ¥{plan.estimated_cost}
+                  {'💰'} {plan.plan_type === 'premium' ? '预估花费' : '最低花费'} ¥{plan.estimated_cost}
                 </p>
               </div>
               <div className="flex gap-2 ml-4">

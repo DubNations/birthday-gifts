@@ -7,10 +7,17 @@ export default function GiftManager({ onRefresh }) {
   const [showForm, setShowForm] = useState(false)
   const [editingGift, setEditingGift] = useState(null)
   const [actionError, setActionError] = useState(null)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [tierFilter, setTierFilter] = useState('')
 
   const fetchGifts = async () => {
     try {
-      const res = await adminApi.getGifts()
+      const params = {}
+      if (search) params.search = search
+      if (statusFilter) params.status = statusFilter
+      if (tierFilter) params.tier = tierFilter
+      const res = await adminApi.getGifts(params)
       setGifts(res.data)
     } catch (err) {
       console.error('获取礼物列表失败:', err)
@@ -18,7 +25,7 @@ export default function GiftManager({ onRefresh }) {
     }
   }
 
-  useEffect(() => { fetchGifts() }, [])
+  useEffect(() => { fetchGifts() }, [search, statusFilter, tierFilter])
 
   const handleCreate = async (data) => {
     try {
@@ -67,8 +74,19 @@ export default function GiftManager({ onRefresh }) {
     }
   }
 
+  const handleUnlock = async (giftId) => {
+    if (!confirm('确定解锁此礼物？')) return
+    try {
+      await adminApi.unlockGift(giftId)
+      setActionError(null)
+      fetchGifts()
+      onRefresh()
+    } catch (err) {
+      setActionError(err.response?.data?.detail || '解锁失败')
+    }
+  }
+
   const tierLabel = (t) => ({ A: '高级', B: '中级', C: '普通' }[t] || t)
-  const statusLabel = (s) => ({ available: '可抽取', locked: '锁定中', claimed: '已领取' }[s] || s)
 
   return (
     <div className='mb-8'>
@@ -77,6 +95,37 @@ export default function GiftManager({ onRefresh }) {
         <button onClick={() => { setEditingGift(null); setShowForm(true) }} className='btn-primary'>
           + 添加礼物
         </button>
+      </div>
+
+      {/* 搜索和筛选 */}
+      <div className='flex flex-wrap gap-3 mb-4'>
+        <input
+          type='text'
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder='搜索名称或手机号...'
+          className='px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none flex-1 min-w-[200px]'
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className='px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none'
+        >
+          <option value=''>全部状态</option>
+          <option value='available'>可抽取</option>
+          <option value='locked'>锁定中</option>
+          <option value='claimed'>已领取</option>
+        </select>
+        <select
+          value={tierFilter}
+          onChange={(e) => setTierFilter(e.target.value)}
+          className='px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none'
+        >
+          <option value=''>全部等级</option>
+          <option value='A'>高级</option>
+          <option value='B'>中级</option>
+          <option value='C'>普通</option>
+        </select>
       </div>
 
       {actionError && (
@@ -104,6 +153,7 @@ export default function GiftManager({ onRefresh }) {
               <th className='px-4 py-3 text-left text-sm font-semibold text-gray-600'>购买链接</th>
               <th className='px-4 py-3 text-left text-sm font-semibold text-gray-600'>权重</th>
               <th className='px-4 py-3 text-left text-sm font-semibold text-gray-600'>状态</th>
+              <th className='px-4 py-3 text-left text-sm font-semibold text-gray-600'>领取者</th>
               <th className='px-4 py-3 text-left text-sm font-semibold text-gray-600'>操作</th>
             </tr>
           </thead>
@@ -121,18 +171,10 @@ export default function GiftManager({ onRefresh }) {
                   {gift.url ? (
                     <a href={gift.url} target='_blank' rel='noreferrer'
                       className='inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 hover:underline'>
-                      <svg className='w-4 h-4' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                        <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14' />
-                      </svg>
                       查看
                     </a>
                   ) : (
-                    <span className='inline-flex items-center gap-1 text-xs text-red-500 bg-red-50 px-2 py-1 rounded-full'>
-                      <svg className='w-3 h-3' fill='currentColor' viewBox='0 0 20 20'>
-                        <path fillRule='evenodd' d='M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z' clipRule='evenodd' />
-                      </svg>
-                      未填写
-                    </span>
+                    <span className='text-xs text-red-500'>未填写</span>
                   )}
                 </td>
                 <td className='px-4 py-3'>
@@ -153,12 +195,21 @@ export default function GiftManager({ onRefresh }) {
                     <option value='claimed'>已领取</option>
                   </select>
                 </td>
+                <td className='px-4 py-3 text-sm text-gray-600'>
+                  {gift.claimed_by || (gift.locked_by ? gift.locked_by : '-')}
+                </td>
                 <td className='px-4 py-3'>
                   <button
                     onClick={() => { setEditingGift(gift); setShowForm(true) }}
-                    className='text-sm text-blue-600 hover:text-blue-800 mr-3'
+                    className='text-sm text-blue-600 hover:text-blue-800 mr-2'
                     disabled={gift.status === 'claimed'}
                   >编辑</button>
+                  {gift.status === 'locked' && (
+                    <button
+                      onClick={() => handleUnlock(gift.id)}
+                      className='text-sm text-amber-600 hover:text-amber-800 mr-2'
+                    >解锁</button>
+                  )}
                   <button
                     onClick={() => handleDelete(gift.id)}
                     className='text-sm text-red-600 hover:text-red-800'
@@ -169,7 +220,7 @@ export default function GiftManager({ onRefresh }) {
             ))}
             {gifts.length === 0 && (
               <tr>
-                <td colSpan='7' className='px-4 py-8 text-center text-gray-400'>暂无礼物</td>
+                <td colSpan='8' className='px-4 py-8 text-center text-gray-400'>暂无礼物</td>
               </tr>
             )}
           </tbody>

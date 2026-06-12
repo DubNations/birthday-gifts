@@ -6,6 +6,7 @@ export default function Navbar() {
   const links = [
     { path: '/', label: '首页' },
     { path: '/draw', label: '抽奖' },
+    { path: '/my-gifts', label: '我的礼物' },
     { path: '/admin', label: '管理' },
   ]
 

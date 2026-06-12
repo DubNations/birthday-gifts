@@ -10,6 +10,7 @@ export function DrawProvider({ children }) {
   const [lockedGifts, setLockedGifts] = useState([])
   const [regretRemaining, setRegretRemaining] = useState(1)
   const [remainingBudget, setRemainingBudget] = useState(0)
+  const [minPrices, setMinPrices] = useState({})
   const [sessionId, setSessionId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -37,6 +38,7 @@ export function DrawProvider({ children }) {
       const res = await drawApi.startDraw(fingerprintId, budget, planType)
       setSessionId(res.data.session_id)
       setRemainingBudget(res.data.remaining_budget)
+      setMinPrices(res.data.min_prices || {})
       return res.data
     } catch (err) {
       const msg = err.response?.data?.detail || '开始抽奖失败'
@@ -78,10 +80,13 @@ export function DrawProvider({ children }) {
   const releaseGift = useCallback(async (fingerprintId, giftId) => {
     setLoading(true); setError(null)
     try {
-      await drawApi.releaseGift(fingerprintId, giftId)
+      const res = await drawApi.releaseGift(fingerprintId, giftId)
       setLockedGifts(prev => prev.filter(g => g.gift_id !== giftId))
       setCurrentGift(null)
       setRegretRemaining(prev => Math.max(0, prev - 1))
+      if (res.data.remaining_budget !== undefined) {
+        setRemainingBudget(res.data.remaining_budget)
+      }
       return true
     } catch (err) {
       const msg = err.response?.data?.detail || '释放失败'
@@ -108,7 +113,7 @@ export function DrawProvider({ children }) {
 
   const value = {
     plans, selectedPlan, currentGift, lockedGifts,
-    regretRemaining, remainingBudget, sessionId, loading, error,
+    regretRemaining, remainingBudget, minPrices, sessionId, loading, error,
     setSelectedPlan, setRemainingBudget, setPlans,
     fetchPlans, startDrawSession, spinGift, claimGift, releaseGift,
     fetchStatus, setError,

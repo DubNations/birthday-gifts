@@ -1,7 +1,18 @@
 import { useState, useEffect } from 'react'
 import GiftManager from '../components/admin/GiftManager'
+import UserManager from '../components/admin/UserManager'
+import SystemSettings from '../components/admin/SystemSettings'
+import ActivityLog from '../components/admin/ActivityLog'
 import ExportPanel from '../components/admin/ExportPanel'
 import { adminApi } from '../api'
+
+const tabs = [
+  { key: 'gifts', label: '礼物管理', icon: '🎁' },
+  { key: 'users', label: '用户管理', icon: '👥' },
+  { key: 'settings', label: '系统设置', icon: '⚙️' },
+  { key: 'activity', label: '活动日志', icon: '📋' },
+  { key: 'data', label: '数据操作', icon: '💾' },
+]
 
 export default function AdminPage() {
   const [password, setPassword] = useState('')
@@ -9,6 +20,7 @@ export default function AdminPage() {
   const [stats, setStats] = useState(null)
   const [authError, setAuthError] = useState('')
   const [loggingIn, setLoggingIn] = useState(false)
+  const [activeTab, setActiveTab] = useState('gifts')
 
   useEffect(() => {
     const token = sessionStorage.getItem('admin_token')
@@ -85,32 +97,66 @@ export default function AdminPage() {
 
   return (
     <div>
-      <div className='flex items-center justify-between mb-8'>
+      <div className='flex items-center justify-between mb-6'>
         <h2 className='text-3xl font-bold text-primary-700'>管理后台</h2>
         <button onClick={handleLogout} className='btn-secondary text-sm'>退出登录</button>
       </div>
+
+      {/* 统计卡片 */}
       {stats && (
-        <div className='grid grid-cols-4 gap-4 mb-8'>
-          <div className='card text-center'>
-            <div className='text-3xl font-bold text-gray-700'>{stats.total}</div>
-            <div className='text-sm text-gray-500'>总礼物</div>
+        <div className='grid grid-cols-3 sm:grid-cols-6 gap-3 mb-6'>
+          <div className='card text-center py-3'>
+            <div className='text-2xl font-bold text-gray-700'>{stats.total}</div>
+            <div className='text-xs text-gray-500'>总礼物</div>
           </div>
-          <div className='card text-center'>
-            <div className='text-3xl font-bold text-green-600'>{stats.available}</div>
-            <div className='text-sm text-gray-500'>可抽取</div>
+          <div className='card text-center py-3'>
+            <div className='text-2xl font-bold text-green-600'>{stats.available}</div>
+            <div className='text-xs text-gray-500'>可抽取</div>
           </div>
-          <div className='card text-center'>
-            <div className='text-3xl font-bold text-amber-600'>{stats.locked}</div>
-            <div className='text-sm text-gray-500'>锁定中</div>
+          <div className='card text-center py-3'>
+            <div className='text-2xl font-bold text-amber-600'>{stats.locked}</div>
+            <div className='text-xs text-gray-500'>锁定中</div>
           </div>
-          <div className='card text-center'>
-            <div className='text-3xl font-bold text-blue-600'>{stats.claimed}</div>
-            <div className='text-sm text-gray-500'>已领取</div>
+          <div className='card text-center py-3'>
+            <div className='text-2xl font-bold text-blue-600'>{stats.claimed}</div>
+            <div className='text-xs text-gray-500'>已领取</div>
+          </div>
+          <div className='card text-center py-3'>
+            <div className='text-2xl font-bold text-purple-600'>{stats.total_users || 0}</div>
+            <div className='text-xs text-gray-500'>总用户</div>
+          </div>
+          <div className='card text-center py-3'>
+            <div className='text-2xl font-bold text-pink-600'>{stats.today_users || 0}</div>
+            <div className='text-xs text-gray-500'>今日活跃</div>
           </div>
         </div>
       )}
-      <GiftManager onRefresh={refreshStats} />
-      <ExportPanel />
+
+      {/* Tab 导航 */}
+      <div className='flex gap-1 mb-6 overflow-x-auto border-b border-gray-200 pb-0'>
+        {tabs.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-all whitespace-nowrap ${
+              activeTab === tab.key
+                ? 'bg-white text-primary-700 border border-b-0 border-gray-200 -mb-px'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab 内容 */}
+      <div>
+        {activeTab === 'gifts' && <GiftManager onRefresh={refreshStats} />}
+        {activeTab === 'users' && <UserManager onRefresh={refreshStats} />}
+        {activeTab === 'settings' && <SystemSettings />}
+        {activeTab === 'activity' && <ActivityLog />}
+        {activeTab === 'data' && <ExportPanel />}
+      </div>
     </div>
   )
 }

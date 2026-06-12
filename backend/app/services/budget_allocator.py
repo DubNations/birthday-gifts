@@ -51,31 +51,30 @@ def allocate_premium(budget: float, stats: Dict[str, Dict]) -> Dict[str, int]:
 
 
 def allocate_diverse(budget: float, stats: Dict[str, Dict]) -> Dict[str, int]:
-    """均衡多样：使用最低价估算，最大化抽奖次数，雨露均沾"""
+    """均衡多样：逐等级贪心填充，最大化抽奖次数"""
     draws = {'A': 0, 'B': 0, 'C': 0}
     avail = {t: stats.get(t, {}).get('count', 0) for t in ['A', 'B', 'C']}
     min_p = {t: stats.get(t, {}).get('min_price', 0) for t in ['A', 'B', 'C']}
-
     remaining = budget
 
-    # 第一轮：每个等级各抽一次（如果预算和库存允许）
-    def run_rounds(tiers):
-        nonlocal remaining
-        while True:
-            cost = sum(min_p[t] for t in tiers if avail[t] > draws[t])
-            if cost == 0 or remaining < cost:
-                break
-            for t in tiers:
-                if avail[t] > draws[t]:
-                    draws[t] += 1
-                    remaining -= min_p[t]
+    # 阶段1: 每个等级至少尝试分配一次（从最贵到最便宜，确保多样性）
+    for tier in sorted(['A', 'B', 'C'], key=lambda t: min_p[t], reverse=True):
+        if avail[tier] > 0 and remaining >= min_p[tier]:
+            draws[tier] += 1
+            avail[tier] -= 1
+            remaining -= min_p[tier]
 
-    run_rounds(['A', 'B', 'C'])
-    # 第二轮：只在中低等级中继续分配
-    run_rounds(['B', 'C'])
-    # 第三轮：只在最低等级中分配剩余预算
-    run_rounds(['C'])
-
+    # 阶段2: 从最便宜开始贪心填充，最大化次数
+    while remaining > 0:
+        allocated = False
+        for tier in sorted(['A', 'B', 'C'], key=lambda t: min_p[t]):
+            if avail[tier] > 0 and remaining >= min_p[tier]:
+                draws[tier] += 1
+                avail[tier] -= 1
+                remaining -= min_p[tier]
+                allocated = True
+        if not allocated:
+            break
     return draws
 
 
@@ -91,11 +90,8 @@ def estimate_cost(draws: Dict[str, int], stats: Dict[str, Dict], use_avg: bool =
 
 def generate_plans(budget: float, db: Session) -> List[dict]:
     stats = get_tier_stats(db)
-    qual = get_qualifications(budget, stats)
 
     plans = []
-
-    tier_names = {'A': '高级', 'B': '中级', 'C': '普通'}
 
     premium_draws = allocate_premium(budget, stats)
     diverse_draws = allocate_diverse(budget, stats)

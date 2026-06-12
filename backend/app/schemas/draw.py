@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, Dict, List
 
 
@@ -29,12 +29,20 @@ class DrawStartResponse(BaseModel):
     draws: Dict[str, int]
     tier_prices: Dict[str, float]
     remaining_budget: float
+    min_prices: Dict[str, float] = {}
 
 
 class SpinRequest(BaseModel):
     tier: str
     fingerprint_id: str
     session_id: int
+
+    @field_validator('tier')
+    @classmethod
+    def validate_tier(cls, v: str) -> str:
+        if v not in ('A', 'B', 'C'):
+            raise ValueError('等级必须是 A、B 或 C')
+        return v
 
 
 class ClaimRequest(BaseModel):
@@ -52,4 +60,5 @@ class DrawStatusResponse(BaseModel):
     status: str
     remaining_budget: float
     locked_gifts: List[dict]
+    claimed_gifts: List[dict] = []
     regret_remaining: int

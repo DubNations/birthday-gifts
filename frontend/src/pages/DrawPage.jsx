@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import DrawAnimation from '../components/client/DrawAnimation'
 import ResultCard from '../components/client/ResultCard'
@@ -13,7 +13,7 @@ export default function DrawPage() {
   const {
     spinGift, claimGift, releaseGift, fetchStatus, startDrawSession,
     loading, error, setError, lockedGifts, regretRemaining, currentGift,
-    remainingBudget, setRemainingBudget,
+    remainingBudget, setRemainingBudget, minPrices,
   } = useDrawStore()
   const [plan, setPlan] = useState(location.state?.plan || null)
   const [budget] = useState(location.state?.budget || 0)
@@ -53,9 +53,9 @@ export default function DrawPage() {
   }, [fingerprint, budget, plan, sessionStarted])
 
   const canAfford = useCallback((tier) => {
-    const p = plan?.tier_prices?.[tier] || 0
-    return p > 0 && remainingBudget >= p
-  }, [plan, remainingBudget])
+    const minP = minPrices?.[tier] || 0
+    return minP > 0 && remainingBudget >= minP
+  }, [minPrices, remainingBudget])
 
   const getAffordableTiers = useCallback(() => {
     const tiers = []
@@ -118,6 +118,15 @@ export default function DrawPage() {
     if (ok) { setPhase('idle'); setSpinningTier(null) }
   }
 
+  if (!fingerprint) {
+    return (
+      <div className="text-center py-20">
+        <p className="text-gray-500 text-lg mb-4">请先登录后再抽奖</p>
+        <Link to="/" className="btn-primary">去登录</Link>
+      </div>
+    )
+  }
+
   if (!plan) {
     return (
       <div className="text-center py-20">
@@ -146,7 +155,10 @@ export default function DrawPage() {
           className="text-center py-10">
           <div className="text-6xl mb-4">🎉</div>
           <h3 className="text-2xl font-bold text-primary-700 mb-2">抽奖完成！</h3>
-          <p className="text-gray-600">预算已用完，感谢参与，祝生日快乐！</p>
+          <p className="text-gray-600 mb-4">预算已用完，感谢参与，祝生日快乐！</p>
+          <Link to="/my-gifts" className="btn-primary inline-block">
+            🎁 查看我的礼物
+          </Link>
         </motion.div>
       )}
 
@@ -223,8 +235,8 @@ export default function DrawPage() {
             <ResultCard gift={currentGift} />
             <div className="text-center mt-2 mb-2">
               <span className="text-sm text-gray-500">
-                此礼物价格: ¥{currentGift.price} | 确认后剩余: ¥
-                {Math.max(0, (remainingBudget - (currentGift.price || 0))).toFixed(0)}
+                此礼物价格: ¥{currentGift.price} | 剩余预算: ¥
+                {Math.max(0, remainingBudget).toFixed(0)}
               </span>
             </div>
             <ClaimActions

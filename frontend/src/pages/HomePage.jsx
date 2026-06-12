@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import BudgetInput from '../components/client/BudgetInput'
 import PlanSelector from '../components/client/PlanSelector'
+import PhoneLogin from '../components/client/PhoneLogin'
 import { useDrawStore } from '../store/drawStore'
 import { useFingerprint } from '../hooks/useFingerprint'
 
 export default function HomePage() {
   const navigate = useNavigate()
-  const { fingerprint } = useFingerprint()
+  const { fingerprint, login, logout } = useFingerprint()
   const { plans, fetchPlans, selectedPlan, setSelectedPlan, loading, error } = useDrawStore()
   const [budget, setBudget] = useState('')
   const [step, setStep] = useState('input')
@@ -39,7 +40,16 @@ export default function HomePage() {
         <p className="text-lg text-gray-600">输入预算，智能分配抽奖方案</p>
       </motion.div>
 
-      {step === 'input' && (
+      {fingerprint && (
+        <div className="text-center mb-4 flex items-center justify-center gap-3">
+          <span className="text-sm text-gray-500">📱 {fingerprint}</span>
+          <button onClick={logout} className="text-xs text-red-500 hover:text-red-700">切换账号</button>
+        </div>
+      )}
+
+      {!fingerprint ? (
+        <PhoneLogin onLogin={login} />
+      ) : step === 'input' ? (
         <BudgetInput
           budget={budget}
           setBudget={setBudget}
@@ -47,9 +57,7 @@ export default function HomePage() {
           loading={loading}
           error={error}
         />
-      )}
-
-      {step === 'plans' && (
+      ) : (
         <PlanSelector
           plans={plans}
           onSelect={handlePlanSelect}
